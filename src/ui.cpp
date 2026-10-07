@@ -1,83 +1,195 @@
 #include "ui.h"
 
+#include <windows.h>
+
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 #include "imgui.h"
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
+#include "misc/cpp/imgui_stdlib.h"
+#include "platform.h"
 
 namespace {
 
+// ---- style -----------------------------------------------------------------
+
 float g_scale = 1.0f;
-ImFont* g_titleFont = nullptr;
+ImFont* g_bold = nullptr;
+ImFont* g_small = nullptr;
+ImFont* g_title = nullptr;
 
 float S(float v) { return v * g_scale; }
 
 ImVec4 Hex(unsigned rgb, float a = 1.0f) {
     return ImVec4(((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f, (rgb & 0xFF) / 255.0f, a);
 }
-
 ImVec4 Mix(const ImVec4& a, const ImVec4& b, float t) {
     return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t);
 }
+ImU32 U32(const ImVec4& c) { return ImGui::GetColorU32(c); }  // respects BeginDisabled()
 
-ImU32 U32(const ImVec4& c) { return ImGui::GetColorU32(c); }
-
-// Palette
-const unsigned kBg = 0x0E0F13;
-const unsigned kCard = 0x16181F;
-const unsigned kFrame = 0x1F222C;
-const unsigned kFrameHover = 0x282C38;
-const unsigned kTrack = 0x2A2E3B;
-const unsigned kText = 0xE6E8EE;
-const unsigned kMuted = 0x8A8F9C;
-const unsigned kAccent = 0x7C86FF;
-const unsigned kAccentA = 0x5B8CFF;
-const unsigned kAccentB = 0xB26BFF;
-const unsigned kGreen = 0x3DD68C;
-const unsigned kRed = 0xE5484D;
-
-const char* kInputs[] = {"Default microphone", "Microphone (USB Audio Device)", "Headset Microphone"};
-const char* kOutputs[] = {"CABLE Input (VB-Audio Virtual Cable)", "Speakers (preview)"};
+const unsigned kBg = 0x111214;
+const unsigned kPanel = 0x17191C;
+const unsigned kRaised = 0x1F2226;
+const unsigned kRaisedHover = 0x272A2F;
+const unsigned kBorder = 0x2A2D32;
+const unsigned kText = 0xE6E8EB;
+const unsigned kMuted = 0x8B9098;
+const unsigned kAccent = 0x34D399;
+const unsigned kAccent2 = 0x22B8CF;
+const unsigned kOnAccent = 0x06130E;
+const unsigned kDanger = 0xF2615F;
+const unsigned kWarn = 0xF5B83D;
 
 void LoadFonts(float scale) {
     ImGuiIO& io = ImGui::GetIO();
-    g_titleFont = nullptr;
+    g_bold = g_small = g_title = nullptr;
 
-#ifdef _WIN32
     char dir[MAX_PATH] = {};
-    UINT n = GetWindowsDirectoryA(dir, MAX_PATH);
+    const UINT n = GetWindowsDirectoryA(dir, MAX_PATH);
     if (n > 0 && n < MAX_PATH) {
-        char regular[MAX_PATH + 32];
-        char bold[MAX_PATH + 32];
-        std::snprintf(regular, sizeof(regular), "%s\\Fonts\\segoeui.ttf", dir);
-        std::snprintf(bold, sizeof(bold), "%s\\Fonts\\segoeuib.ttf", dir);
-        if (GetFileAttributesA(regular) != INVALID_FILE_ATTRIBUTES) {
-            io.Fonts->AddFontFromFileTTF(regular, 16.0f * scale);
-            if (GetFileAttributesA(bold) != INVALID_FILE_ATTRIBUTES)
-                g_titleFont = io.Fonts->AddFontFromFileTTF(bold, 24.0f * scale);
+        struct Family {
+            const char* regular;
+            const char* bold;
+        };
+        static const Family families[] = {
+            {"segoeui.ttf", "segoeuib.ttf"}, {"tahoma.ttf", "tahomabd.ttf"}, {"arial.ttf", "arialbd.ttf"}};
+        for (const Family& f : families) {
+            char regular[MAX_PATH + 32], bold[MAX_PATH + 32];
+            std::snprintf(regular, sizeof(regular), "%s\\Fonts\\%s", dir, f.regular);
+            std::snprintf(bold, sizeof(bold), "%s\\Fonts\\%s", dir, f.bold);
+            if (GetFileAttributesA(regular) == INVALID_FILE_ATTRIBUTES) continue;
+
+            io.Fonts->AddFontFromFileTTF(regular, 15.0f * scale);
+            if (GetFileAttributesA(bold) != INVALID_FILE_ATTRIBUTES) {
+                g_bold = io.Fonts->AddFontFromFileTTF(bold, 15.0f * scale);
+                g_small = io.Fonts->AddFontFromFileTTF(bold, 11.5f * scale);
+                g_title = io.Fonts->AddFontFromFileTTF(bold, 22.0f * scale);
+            }
             return;
         }
     }
-#endif
     ImFontConfig cfg;
-    cfg.SizePixels = 16.0f * scale;
+    cfg.SizePixels = 15.0f * scale;
     io.Fonts->AddFontDefault(&cfg);
 }
 
-// ---- widgets ---------------------------------------------------------------
+ImFont* Or(ImFont* f) { return f ? f : ImGui::GetFont(); }
+
+// ---- small helpers -----------------------------------------------------------
+
+void HandCursor() {
+    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+}
+
+void Label(const char* text, unsigned color = kMuted) {
+    ImGui::PushStyleColor(ImGuiCol_Text, Hex(color));
+    ImGui::TextUnformatted(text);
+    ImGui::PopStyleColor();
+}
+
+void SectionLabel(const char* text) {
+    ImGui::PushFont(Or(g_small));
+    Label(text);
+    ImGui::PopFont();
+}
+
+// ---- widgets -----------------------------------------------------------------
+
+enum class Icon { Close, Up, Down, Gear };
+
+bool IconButton(const char* id, Icon icon, float size) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size));
+    const bool hover = ImGui::IsItemHovered();
+    HandCursor();
+
+    if (hover) dl->AddRectFilled(p, ImVec2(p.x + size, p.y + size), U32(Hex(kRaised)), S(6));
+    const ImU32 col = U32(Hex(hover ? kText : kMuted));
+    const ImVec2 c(p.x + size * 0.5f, p.y + size * 0.5f);
+    const float t = S(1.6f);
+
+    switch (icon) {
+        case Icon::Close: {
+            const float r = size * 0.18f;
+            dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), col, t);
+            dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), col, t);
+            break;
+        }
+        case Icon::Up:
+        case Icon::Down: {
+            const float r = size * 0.2f;
+            const float d = (icon == Icon::Up) ? -1.0f : 1.0f;
+            const ImVec2 pts[3] = {ImVec2(c.x - r, c.y - d * r * 0.5f), ImVec2(c.x, c.y + d * r * 0.5f),
+                                   ImVec2(c.x + r, c.y - d * r * 0.5f)};
+            dl->AddPolyline(pts, 3, col, ImDrawFlags_None, t);
+            break;
+        }
+        case Icon::Gear: {
+            dl->AddCircle(c, size * 0.17f, col, 20, S(2.0f));
+            for (int k = 0; k < 8; ++k) {
+                const float a = k * 3.14159265f / 4.0f;
+                const ImVec2 d(std::cos(a), std::sin(a));
+                dl->AddLine(ImVec2(c.x + d.x * size * 0.22f, c.y + d.y * size * 0.22f),
+                            ImVec2(c.x + d.x * size * 0.31f, c.y + d.y * size * 0.31f), col, S(2.6f));
+            }
+            break;
+        }
+    }
+    return pressed;
+}
+
+enum class Look { Normal, Primary, Danger };
+
+bool Button(const char* label, ImVec2 size, Look look = Look::Normal) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool pressed = ImGui::InvisibleButton(label, size);
+    const bool hover = ImGui::IsItemHovered();
+    const bool held = ImGui::IsItemActive();
+    HandCursor();
+
+    ImVec4 bg, border, text;
+    switch (look) {
+        case Look::Primary:
+            bg = Mix(Hex(kAccent), Hex(0xFFFFFF), hover ? 0.12f : 0.0f);
+            if (held) bg = Mix(Hex(kAccent), Hex(0x000000), 0.15f);
+            border = bg;
+            text = Hex(kOnAccent);
+            break;
+        case Look::Danger:
+            bg = Hex(kDanger, hover ? 0.20f : 0.10f);
+            border = Hex(kDanger, 0.55f);
+            text = Hex(kDanger);
+            break;
+        default:
+            bg = Hex(hover ? kRaisedHover : kRaised);
+            border = Hex(kBorder);
+            text = Hex(kText);
+            break;
+    }
+    dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), U32(bg), S(7));
+    dl->AddRect(p, ImVec2(p.x + size.x, p.y + size.y), U32(border), S(7));
+
+    ImGui::PushFont(Or(g_bold));
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    dl->AddText(ImVec2(p.x + (size.x - ts.x) * 0.5f, p.y + (size.y - ts.y) * 0.5f), U32(text), label);
+    ImGui::PopFont();
+    return pressed;
+}
 
 bool Toggle(const char* id, bool* v) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 p = ImGui::GetCursorScreenPos();
-    const float w = S(40), h = S(22);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float w = S(36), h = S(20);
 
     ImGui::InvisibleButton(id, ImVec2(w, h));
+    HandCursor();
     bool changed = false;
     if (ImGui::IsItemClicked()) {
         *v = !*v;
@@ -88,122 +200,88 @@ bool Toggle(const char* id, bool* v) {
     const ImGuiID gid = ImGui::GetItemID();
     const float target = *v ? 1.0f : 0.0f;
     float t = st->GetFloat(gid, target);
-    t += (target - t) * std::min(1.0f, ImGui::GetIO().DeltaTime * 14.0f);
+    t += (target - t) * std::min(1.0f, ImGui::GetIO().DeltaTime * 16.0f);
     st->SetFloat(gid, t);
 
-    ImVec4 bg = Mix(Hex(kTrack), Hex(kAccent), t);
+    ImVec4 bg = Mix(Hex(0x32363C), Hex(kAccent), t);
     if (ImGui::IsItemHovered()) bg = Mix(bg, Hex(0xFFFFFF), 0.08f);
     dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), U32(bg), h * 0.5f);
 
     const float r = h * 0.5f - S(3);
     const float cx = p.x + h * 0.5f + (w - h) * t;
-    dl->AddCircleFilled(ImVec2(cx, p.y + h * 0.5f), r, U32(Hex(0xFFFFFF)), 24);
+    dl->AddCircleFilled(ImVec2(cx, p.y + h * 0.5f), r, U32(Mix(Hex(0xC9CDD3), Hex(kOnAccent), t * 0.9f)), 24);
     return changed;
 }
 
-// Horizontal integer slider. If `centered`, the fill grows from the middle (for +/- ranges).
 bool Slider(const char* id, int* v, int lo, int hi, bool centered, int resetValue) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
     const float w = ImGui::GetContentRegionAvail().x;
-    const float h = S(28);
+    const float h = S(24);
 
     ImGui::InvisibleButton(id, ImVec2(w, h));
     const bool active = ImGui::IsItemActive();
-    const bool hovered = ImGui::IsItemHovered();
+    const bool hover = ImGui::IsItemHovered();
+    HandCursor();
 
-    const float pad = S(10);
+    const float pad = S(8);
     const float x0 = p.x + pad, x1 = p.x + w - pad;
     bool changed = false;
-
     if (active) {
-        float t = std::clamp((ImGui::GetIO().MousePos.x - x0) / (x1 - x0), 0.0f, 1.0f);
-        int nv = lo + static_cast<int>(std::lround(t * (hi - lo)));
+        const float t = std::clamp((ImGui::GetIO().MousePos.x - x0) / (x1 - x0), 0.0f, 1.0f);
+        const int nv = lo + static_cast<int>(std::lround(t * (hi - lo)));
         if (nv != *v) {
             *v = nv;
             changed = true;
         }
     }
-    if (hovered && ImGui::IsMouseDoubleClicked(0) && *v != resetValue) {
+    if (hover && ImGui::IsMouseDoubleClicked(0) && *v != resetValue) {
         *v = resetValue;
         changed = true;
     }
 
     const float t = static_cast<float>(*v - lo) / static_cast<float>(hi - lo);
     const float cy = p.y + h * 0.5f;
-    const float th = S(5);
+    const float th = S(4);
     const float kx = x0 + (x1 - x0) * t;
     const float fx = centered ? x0 + (x1 - x0) * 0.5f : x0;
 
-    dl->AddRectFilled(ImVec2(x0, cy - th * 0.5f), ImVec2(x1, cy + th * 0.5f), U32(Hex(kTrack)), th * 0.5f);
+    dl->AddRectFilled(ImVec2(x0, cy - th * 0.5f), ImVec2(x1, cy + th * 0.5f), U32(Hex(0x2D3035)), th * 0.5f);
     dl->AddRectFilled(ImVec2(std::min(fx, kx), cy - th * 0.5f), ImVec2(std::max(fx, kx), cy + th * 0.5f),
                       U32(Hex(kAccent)), th * 0.5f);
-
-    const float r = (active || hovered) ? S(9) : S(8);
-    dl->AddCircleFilled(ImVec2(kx, cy), r, U32(Hex(0xFFFFFF)), 24);
+    dl->AddCircleFilled(ImVec2(kx, cy), (active || hover) ? S(7.5f) : S(6.5f), U32(Hex(0xF1F3F5)), 24);
     return changed;
 }
 
-// Label on the left, optional value text on the right, on one line.
-void Row(const char* label, const char* value, bool accentValue = false) {
-    ImVec2 p = ImGui::GetCursorScreenPos();
+// Label on the left, value on the right.
+void ValueRow(const char* label, const char* value) {
+    const ImVec2 p = ImGui::GetCursorScreenPos();
     const float right = p.x + ImGui::GetContentRegionAvail().x;
     ImGui::TextUnformatted(label);
-    if (value) {
-        ImVec2 ts = ImGui::CalcTextSize(value);
-        ImGui::GetWindowDrawList()->AddText(ImVec2(right - ts.x, p.y), U32(Hex(accentValue ? kAccent : kMuted)), value);
+    const ImVec2 ts = ImGui::CalcTextSize(value);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(right - ts.x, p.y), U32(Hex(kAccent)), value);
+}
+
+void LevelBar(const char* label, ImVec2 p, float width, float level) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGui::PushFont(Or(g_small));
+    dl->AddText(ImVec2(p.x, p.y), U32(Hex(kMuted)), label);
+    ImGui::PopFont();
+
+    const float db = 20.0f * std::log10(std::max(level, 1e-5f));
+    const float v = std::clamp((db + 60.0f) / 60.0f, 0.0f, 1.0f);
+    const float x0 = p.x + S(34), y0 = p.y + S(4), h = S(6);
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + width, y0 + h), U32(Hex(0x2D3035)), h * 0.5f);
+    if (v > 0.01f) {
+        const ImVec4 c = v > 0.93f ? Hex(kDanger) : (v > 0.82f ? Hex(kWarn) : Hex(kAccent));
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + std::max(width * v, h), y0 + h), U32(c), h * 0.5f);
     }
 }
 
-void Muted(const char* text) {
-    ImGui::PushStyleColor(ImGuiCol_Text, Hex(kMuted));
-    ImGui::TextUnformatted(text);
-    ImGui::PopStyleColor();
-}
-
-void BeginCard(const char* id) {
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, Hex(kCard));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(14));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(18), S(16)));
-    ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding,
-                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor();
-}
-
-void EndCard() { ImGui::EndChild(); }
-
-// Card title with an on/off switch on the right. Returns the switch state.
-void CardHeader(const char* title, const char* toggleId, bool* enabled) {
-    ImVec2 p = ImGui::GetCursorScreenPos();
-    const float right = p.x + ImGui::GetContentRegionAvail().x;
-    const float h = S(22);
-
-    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + (h - ImGui::GetTextLineHeight()) * 0.5f));
-    ImGui::TextUnformatted(title);
-
-    ImGui::SetCursorScreenPos(ImVec2(right - S(40), p.y));
-    Toggle(toggleId, enabled);
-    ImGui::Dummy(ImVec2(0, S(2)));
-}
-
-void Combo(const char* id, int* current, const char* const* items, int count) {
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::BeginCombo(id, items[*current])) {
-        for (int i = 0; i < count; ++i) {
-            const bool sel = (*current == i);
-            if (ImGui::Selectable(items[i], sel)) *current = i;
-            if (sel) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-}
-
-void DrawLogo(ImVec2 pos, float size, bool active) {
+void DrawLogo(ImVec2 pos, float size, float level, bool active) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     static const float base[5] = {0.40f, 0.70f, 1.00f, 0.60f, 0.30f};
-    const float bw = size * 0.14f;
-    const float gap = size * 0.115f;
+    const float bw = size * 0.14f, gap = size * 0.115f;
     const float total = 5 * bw + 4 * gap;
     const float x0 = pos.x + (size - total) * 0.5f;
     const float cy = pos.y + size * 0.5f;
@@ -211,17 +289,343 @@ void DrawLogo(ImVec2 pos, float size, bool active) {
 
     for (int i = 0; i < 5; ++i) {
         float k = base[i];
-        if (active) k *= 0.55f + 0.45f * std::sin(t * 4.0f + i * 0.9f);
-        const float hh = std::max(size * k, bw);
+        if (active) k *= 0.45f + 0.55f * std::clamp(level * 3.0f, 0.0f, 1.0f) * (0.65f + 0.35f * std::sin(t * 7 + i));
+        const float hh = std::max(size * 0.9f * k, bw);
         const float x = x0 + i * (bw + gap);
-        ImVec4 c = Mix(Hex(kAccentA), Hex(kAccentB), i / 4.0f);
-        dl->AddRectFilled(ImVec2(x, cy - hh * 0.5f), ImVec2(x + bw, cy + hh * 0.5f), U32(c), bw * 0.5f);
+        dl->AddRectFilled(ImVec2(x, cy - hh * 0.5f), ImVec2(x + bw, cy + hh * 0.5f),
+                          U32(Mix(Hex(kAccent), Hex(kAccent2), i / 4.0f)), bw * 0.5f);
     }
+}
+
+// Rounded container that grows with its content.
+bool BeginCard(const char* id, bool danger = false) {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, Hex(kPanel));
+    ImGui::PushStyleColor(ImGuiCol_Border, danger ? Hex(kDanger, 0.6f) : Hex(kBorder));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(9));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(16), S(14)));
+    const bool open = ImGui::BeginChild(
+        id, ImVec2(0, 0),
+        ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_Borders,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    return open;
+}
+
+void DeviceCombo(const char* id, std::string& selected, const std::vector<std::string>& names, float width,
+                 bool& changed) {
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::BeginCombo(id, selected.empty() ? "System default" : selected.c_str())) {
+        if (ImGui::Selectable("System default", selected.empty()) && !selected.empty()) {
+            selected.clear();
+            changed = true;
+        }
+        for (const std::string& n : names) {
+            const bool sel = (n == selected);
+            if (ImGui::Selectable(n.c_str(), sel) && !sel) {
+                selected = n;
+                changed = true;
+            }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+}
+
+// A settings line: title + hint on the left, control on the right.
+template <typename F>
+void SettingRow(const char* title, const char* hint, float controlWidth, F control) {
+    const float x0 = ImGui::GetCursorPosX();
+    const float y0 = ImGui::GetCursorPosY();
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float frameH = ImGui::GetFrameHeight();
+
+    ImGui::BeginGroup();
+    ImGui::PushTextWrapPos(ImGui::GetCursorScreenPos().x + avail - controlWidth - S(20));
+    ImGui::TextUnformatted(title);
+    if (hint) Label(hint);
+    ImGui::PopTextWrapPos();
+    ImGui::EndGroup();
+    const float h = std::max(ImGui::GetItemRectSize().y, frameH);
+
+    ImGui::SetCursorPos(ImVec2(x0 + avail - controlWidth, y0 + (h - frameH) * 0.5f));
+    control(frameH);
+
+    ImGui::SetCursorPos(ImVec2(x0, y0 + h + S(14)));
+    ImGui::Dummy(ImVec2(0, 0));
+}
+
+// ---- pages -------------------------------------------------------------------
+
+enum class Page { Effects, Settings };
+Page g_page = Page::Effects;
+
+void DrawEffectParams(App& app, Effect& e) {
+    ImGui::BeginDisabled(!e.enabled.load());
+    for (Param& p : e.params) {
+        ImGui::PushID(p.key.c_str());
+        int v = p.value.load();
+        char text[32];
+        std::snprintf(text, sizeof(text), p.format.c_str(), v);
+        ValueRow(p.label.c_str(), text);
+        if (Slider("##slider", &v, p.min, p.max, p.centered, p.def)) {
+            p.value.store(v);
+            app.dirty = true;
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndDisabled();
+}
+
+void DrawAddMenu(App& app, const std::vector<std::shared_ptr<Effect>>& chain) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(6), S(6)));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, S(9));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1);
+    ImGui::SetNextWindowSize(ImVec2(S(340), 0));
+    const bool open = ImGui::BeginPopup("add_effect");
+    ImGui::PopStyleVar(3);
+    if (!open) return;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (const EffectInfo& info : AvailableEffects()) {
+        bool added = false;
+        for (const auto& e : chain) added = added || std::string(e->id()) == info.id;
+
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float w = ImGui::GetContentRegionAvail().x;
+        ImGui::BeginDisabled(added);
+        const bool clicked = ImGui::Selectable((std::string("##") + info.id).c_str(), false, 0, ImVec2(0, S(48)));
+        ImGui::EndDisabled();
+
+        ImGui::PushFont(Or(g_bold));
+        dl->AddText(ImVec2(p.x + S(10), p.y + S(6)), U32(Hex(added ? kMuted : kText)), info.title);
+        ImGui::PopFont();
+        dl->AddText(ImVec2(p.x + S(10), p.y + S(26)), U32(Hex(kMuted)), info.description);
+        if (added) {
+            const ImVec2 ts = ImGui::CalcTextSize("Added");
+            dl->AddText(ImVec2(p.x + w - ts.x - S(10), p.y + S(6)), U32(Hex(kMuted)), "Added");
+        }
+
+        if (clicked) {
+            app.engine.addEffect(info.id);
+            app.dirty = true;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::EndPopup();
+}
+
+void DrawEffectsPage(App& app) {
+    // Errors from the last Start attempt.
+    if (!app.error.empty()) {
+        BeginCard("##error", true);
+        ImGui::PushStyleColor(ImGuiCol_Text, Hex(kDanger));
+        ImGui::TextWrapped("%s", app.error.c_str());
+        ImGui::PopStyleColor();
+        Label("Click to dismiss. Check the devices in Settings.");
+        ImGui::EndChild();
+        if (ImGui::IsItemClicked()) app.error.clear();
+        ImGui::Dummy(ImVec2(0, S(4)));
+    }
+
+    // Section header with the Add button.
+    const auto chain = app.engine.chain();
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float right = p.x + ImGui::GetContentRegionAvail().x;
+        const ImVec2 btn(S(118), S(30));
+
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + (btn.y - ImGui::GetTextLineHeight()) * 0.5f));
+        SectionLabel("EFFECTS");
+
+        ImGui::SetCursorScreenPos(ImVec2(right - btn.x, p.y));
+        if (Button("+  Add effect", btn)) ImGui::OpenPopup("add_effect");
+        const ImVec2 bmin = ImGui::GetItemRectMin(), bmax = ImGui::GetItemRectMax();
+        ImGui::SetNextWindowPos(ImVec2(bmax.x, bmax.y + S(6)), ImGuiCond_Always, ImVec2(1, 0));
+        DrawAddMenu(app, chain);
+        (void)bmin;
+
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + btn.y + S(12)));
+        ImGui::Dummy(ImVec2(0, 0));
+    }
+
+    if (chain.empty()) {
+        ImGui::Dummy(ImVec2(0, S(36)));
+        const float w = ImGui::GetContentRegionAvail().x;
+        const char* a = "No effects yet";
+        const char* b = "Press \"Add effect\" to build your chain.";
+        ImGui::PushFont(Or(g_bold));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (w - ImGui::CalcTextSize(a).x) * 0.5f);
+        Label(a, kText);
+        ImGui::PopFont();
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (w - ImGui::CalcTextSize(b).x) * 0.5f);
+        Label(b);
+        return;
+    }
+
+    int removeIndex = -1, moveIndex = -1, moveDir = 0;
+    for (size_t i = 0; i < chain.size(); ++i) {
+        Effect& e = *chain[i];
+        ImGui::PushID(&e);
+        BeginCard("##fx");
+
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float right = p.x + ImGui::GetContentRegionAvail().x;
+
+        ImGui::PushFont(Or(g_bold));
+        ImGui::TextUnformatted(e.title());
+        ImGui::PopFont();
+        Label(e.description());
+        const ImVec2 after = ImGui::GetCursorScreenPos();
+
+        const float ib = S(26);
+        float x = right - S(36);
+        ImGui::SetCursorScreenPos(ImVec2(x, p.y + S(1)));
+        bool on = e.enabled.load();
+        if (Toggle("##on", &on)) {
+            e.enabled.store(on);
+            app.dirty = true;
+        }
+        x -= S(12) + ib;
+        ImGui::SetCursorScreenPos(ImVec2(x, p.y - S(2)));
+        if (IconButton("##remove", Icon::Close, ib)) removeIndex = static_cast<int>(i);
+        x -= ib;
+        ImGui::SetCursorScreenPos(ImVec2(x, p.y - S(2)));
+        ImGui::BeginDisabled(i + 1 >= chain.size());
+        if (IconButton("##down", Icon::Down, ib)) {
+            moveIndex = static_cast<int>(i);
+            moveDir = 1;
+        }
+        ImGui::EndDisabled();
+        x -= ib;
+        ImGui::SetCursorScreenPos(ImVec2(x, p.y - S(2)));
+        ImGui::BeginDisabled(i == 0);
+        if (IconButton("##up", Icon::Up, ib)) {
+            moveIndex = static_cast<int>(i);
+            moveDir = -1;
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SetCursorScreenPos(ImVec2(after.x, after.y + S(4)));
+        DrawEffectParams(app, e);
+
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+
+    if (removeIndex >= 0) {
+        app.engine.removeEffect(static_cast<size_t>(removeIndex));
+        app.dirty = true;
+    } else if (moveIndex >= 0) {
+        app.engine.moveEffect(static_cast<size_t>(moveIndex), moveDir);
+        app.dirty = true;
+    }
+}
+
+void DrawSettingsPage(App& app) {
+    Settings& s = app.settings;
+    const float cw = std::min(S(270), ImGui::GetContentRegionAvail().x * 0.5f);
+    bool devicesChanged = false;
+
+    ImGui::PushFont(Or(g_title));
+    ImGui::TextUnformatted("Settings");
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, S(10)));
+
+    // Audio
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float right = p.x + ImGui::GetContentRegionAvail().x;
+        const ImVec2 btn(S(76), S(26));
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + (btn.y - ImGui::GetTextLineHeight()) * 0.5f));
+        SectionLabel("AUDIO");
+        ImGui::SetCursorScreenPos(ImVec2(right - btn.x, p.y));
+        if (Button("Refresh", btn)) app.engine.refreshDevices();
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + btn.y + S(12)));
+        ImGui::Dummy(ImVec2(0, 0));
+    }
+
+    SettingRow("Microphone", "Your real microphone.", cw, [&](float) {
+        DeviceCombo("##input", s.input, app.engine.inputDevices(), cw, devicesChanged);
+    });
+    SettingRow("Virtual microphone output", "Where the processed sound goes. Pick the input of a virtual cable, e.g. CABLE Input.",
+               cw, [&](float) { DeviceCombo("##output", s.output, app.engine.outputDevices(), cw, devicesChanged); });
+    SettingRow("Virtual microphone name", "Name for the built-in virtual device (planned). A cable like VB-Cable keeps its own name.",
+               cw, [&](float) {
+                   ImGui::SetNextItemWidth(cw);
+                   if (ImGui::InputText("##micname", &s.micName))
+                       app.dirty = true;
+               });
+    SettingRow("Listen to yourself", "Also play the processed sound through your headphones.", S(36), [&](float fh) {
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (fh - S(20)) * 0.5f);
+        if (Toggle("##monitor", &s.monitorEnabled)) devicesChanged = true;
+    });
+    ImGui::BeginDisabled(!s.monitorEnabled);
+    SettingRow("Headphones", nullptr, cw, [&](float) {
+        DeviceCombo("##monitor_dev", s.monitor, app.engine.outputDevices(), cw, devicesChanged);
+    });
+    ImGui::EndDisabled();
+
+    ImGui::Dummy(ImVec2(0, S(8)));
+    SectionLabel("GENERAL");
+    ImGui::Dummy(ImVec2(0, S(2)));
+
+    auto toggleRow = [&](const char* title, const char* hint, const char* id, bool* v) {
+        bool changed = false;
+        SettingRow(title, hint, S(36), [&](float fh) {
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (fh - S(20)) * 0.5f);
+            changed = Toggle(id, v);
+        });
+        return changed;
+    };
+
+    if (toggleRow("Start with Windows", "Launch WinEffects when you sign in.", "##autostart", &s.autostart)) {
+        SetAutostart(s.autostart);
+        s.autostart = IsAutostartEnabled();
+    }
+    if (toggleRow("Close to tray", "Closing the window keeps WinEffects running in the tray.", "##tray", &s.closeToTray))
+        app.dirty = true;
+    if (toggleRow("Start minimized", "Open hidden in the tray instead of showing the window.", "##minimized",
+                  &s.startMinimized))
+        app.dirty = true;
+    if (toggleRow("Start processing automatically", "Begin processing as soon as the app launches.", "##autoengine",
+                  &s.autoStartEngine))
+        app.dirty = true;
+
+    if (devicesChanged) {
+        app.dirty = true;
+        app.restartIfRunning();
+    }
+}
+
+void DrawFooter(App& app, ImVec2 origin, float width, float height) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float pad = S(20);
+    dl->AddLine(origin, ImVec2(origin.x + width, origin.y), U32(Hex(kBorder)));
+
+    const bool running = app.engine.running();
+    const float top = origin.y + (height - S(34)) * 0.5f;
+    LevelBar("IN", ImVec2(origin.x + pad, top), S(120), app.engine.inputLevel());
+    LevelBar("OUT", ImVec2(origin.x + pad, top + S(18)), S(120), app.engine.outputLevel());
+
+    const ImVec2 btn(S(110), S(38));
+    const float bx = origin.x + width - pad - btn.x;
+    ImGui::SetCursorScreenPos(ImVec2(bx, origin.y + (height - btn.y) * 0.5f));
+    if (Button(running ? "Stop" : "Start", btn, running ? Look::Danger : Look::Primary)) app.toggle();
+
+    char status[48];
+    if (running)
+        std::snprintf(status, sizeof(status), "Live  \xC2\xB7  ~%d ms", app.engine.latencyMs());
+    else
+        std::snprintf(status, sizeof(status), "%s", app.error.empty() ? "Stopped" : "Not started");
+    const ImVec2 ts = ImGui::CalcTextSize(status);
+    const ImVec4 col = running ? Hex(kAccent) : Hex(app.error.empty() ? kMuted : kDanger);
+    dl->AddText(ImVec2(bx - S(14) - ts.x, origin.y + (height - ts.y) * 0.5f), U32(col), status);
 }
 
 }  // namespace
 
-// ---- public ----------------------------------------------------------------
+// ---- public ------------------------------------------------------------------
 
 void ApplyTheme(float scale) {
     g_scale = scale;
@@ -230,18 +634,19 @@ void ApplyTheme(float scale) {
     ImGuiStyle& s = ImGui::GetStyle();
     s = ImGuiStyle();
     s.WindowBorderSize = 0;
-    s.ChildBorderSize = 0;
+    s.ChildBorderSize = 1;
     s.PopupBorderSize = 1;
-    s.FrameBorderSize = 0;
+    s.FrameBorderSize = 1;
     s.WindowRounding = 0;
-    s.FrameRounding = 9;
-    s.PopupRounding = 10;
-    s.ChildRounding = 14;
-    s.FramePadding = ImVec2(12, 9);
-    s.ItemSpacing = ImVec2(10, 12);
+    s.FrameRounding = 7;
+    s.PopupRounding = 9;
+    s.ChildRounding = 9;
+    s.GrabRounding = 7;
+    s.FramePadding = ImVec2(11, 8);
+    s.ItemSpacing = ImVec2(10, 10);
     s.ItemInnerSpacing = ImVec2(8, 6);
-    s.ScrollbarSize = 8;
-    s.ScrollbarRounding = 8;
+    s.ScrollbarSize = 9;
+    s.ScrollbarRounding = 9;
     s.WindowPadding = ImVec2(10, 10);
     s.ScaleAllSizes(scale);
 
@@ -249,132 +654,81 @@ void ApplyTheme(float scale) {
     c[ImGuiCol_Text] = Hex(kText);
     c[ImGuiCol_TextDisabled] = Hex(kMuted);
     c[ImGuiCol_WindowBg] = Hex(kBg);
-    c[ImGuiCol_ChildBg] = Hex(kCard);
-    c[ImGuiCol_PopupBg] = Hex(0x1B1E27);
-    c[ImGuiCol_Border] = Hex(0x2A2D38);
-    c[ImGuiCol_FrameBg] = Hex(kFrame);
-    c[ImGuiCol_FrameBgHovered] = Hex(kFrameHover);
-    c[ImGuiCol_FrameBgActive] = Hex(kFrameHover);
-    c[ImGuiCol_Button] = Hex(kFrame);
-    c[ImGuiCol_ButtonHovered] = Hex(kFrameHover);
-    c[ImGuiCol_ButtonActive] = Hex(kTrack);
-    c[ImGuiCol_Header] = Hex(kAccent, 0.25f);
-    c[ImGuiCol_HeaderHovered] = Hex(kAccent, 0.35f);
-    c[ImGuiCol_HeaderActive] = Hex(kAccent, 0.45f);
+    c[ImGuiCol_ChildBg] = Hex(kBg);
+    c[ImGuiCol_PopupBg] = Hex(0x1A1C20);
+    c[ImGuiCol_Border] = Hex(kBorder);
+    c[ImGuiCol_FrameBg] = Hex(kRaised);
+    c[ImGuiCol_FrameBgHovered] = Hex(kRaisedHover);
+    c[ImGuiCol_FrameBgActive] = Hex(kRaisedHover);
+    c[ImGuiCol_Button] = Hex(kRaised);
+    c[ImGuiCol_ButtonHovered] = Hex(kRaisedHover);
+    c[ImGuiCol_ButtonActive] = Hex(kRaisedHover);
+    c[ImGuiCol_Header] = Hex(kAccent, 0.16f);
+    c[ImGuiCol_HeaderHovered] = Hex(0xFFFFFF, 0.06f);
+    c[ImGuiCol_HeaderActive] = Hex(kAccent, 0.22f);
     c[ImGuiCol_ScrollbarBg] = Hex(kBg, 0.0f);
-    c[ImGuiCol_ScrollbarGrab] = Hex(kTrack);
-    c[ImGuiCol_ScrollbarGrabHovered] = Hex(kFrameHover);
+    c[ImGuiCol_ScrollbarGrab] = Hex(0x33373D);
+    c[ImGuiCol_ScrollbarGrabHovered] = Hex(0x484D55);
     c[ImGuiCol_ScrollbarGrabActive] = Hex(kMuted);
-    c[ImGuiCol_TextSelectedBg] = Hex(kAccent, 0.35f);
+    c[ImGuiCol_TextSelectedBg] = Hex(kAccent, 0.30f);
 }
 
-void DrawUI(AppState& st) {
+void DrawUI(App& app) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(vp->WorkSize);
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(22), S(22)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
     ImGui::Begin("##main", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
-    ImGui::PopStyleVar();
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    ImGui::PopStyleVar(2);
 
-    // Header: logo, name, status
+    static bool wasSettings = false;
+    const bool settingsOpen = (g_page == Page::Settings);
+    if (settingsOpen && !wasSettings) app.engine.refreshDevices();
+    wasSettings = settingsOpen;
+
+    const ImVec2 wp = ImGui::GetWindowPos();
+    const float W = ImGui::GetWindowWidth();
+    const float Hh = ImGui::GetWindowHeight();
+    const float pad = S(20), header = S(56);
+    const bool running = app.engine.running();
+
+    // Header: small logo on the left, settings on the right.
     {
-        const float logo = S(44);
-        DrawLogo(ImGui::GetCursorScreenPos(), logo, st.running);
-        ImGui::Dummy(ImVec2(logo, logo));
-        ImGui::SameLine(0, S(14));
+        const float logo = S(24);
+        DrawLogo(ImVec2(wp.x + pad, wp.y + (header - logo) * 0.5f), logo, app.engine.outputLevel(), running);
 
-        ImGui::BeginGroup();
-        ImGui::PushFont(g_titleFont ? g_titleFont : ImGui::GetFont());
+        ImGui::SetCursorPos(ImVec2(pad + logo + S(10), (header - ImGui::GetTextLineHeight()) * 0.5f));
+        ImGui::PushFont(Or(g_bold));
         ImGui::TextUnformatted("WinEffects");
         ImGui::PopFont();
 
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        const float lh = ImGui::GetTextLineHeight();
-        const ImVec4 dot = Hex(st.running ? kGreen : kMuted);
-        ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + S(4), p.y + lh * 0.5f), S(4), U32(dot), 16);
-        ImGui::SetCursorScreenPos(ImVec2(p.x + S(16), p.y));
-        ImGui::TextColored(dot, st.running ? "Running" : "Stopped");
-        ImGui::EndGroup();
+        const float nav = S(32);
+        ImGui::SetCursorPos(ImVec2(W - pad - nav, (header - nav) * 0.5f));
+        if (IconButton("##nav", settingsOpen ? Icon::Close : Icon::Gear, nav))
+            g_page = settingsOpen ? Page::Effects : Page::Settings;
+
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(wp.x, wp.y + header), ImVec2(wp.x + W, wp.y + header),
+                                            U32(Hex(kBorder)));
+        ImGui::SetCursorPos(ImVec2(0, header));
     }
-    ImGui::Dummy(ImVec2(0, S(4)));
 
-    // Devices
-    BeginCard("devices");
-    Muted("Input");
-    Combo("##in", &st.inputDevice, kInputs, IM_ARRAYSIZE(kInputs));
-    Muted("Output");
-    Combo("##out", &st.outputDevice, kOutputs, IM_ARRAYSIZE(kOutputs));
-    Muted("Virtual microphone name");
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::InputTextWithHint("##mic", "Device name", st.micName, sizeof(st.micName));
-    EndCard();
-
-    // Noise suppression
-    BeginCard("noise");
-    CardHeader("Noise suppression", "##noise_on", &st.noiseEnabled);
-    ImGui::BeginDisabled(!st.noiseEnabled);
-    char val[32];
-    std::snprintf(val, sizeof(val), "%d%%", st.noiseStrength);
-    Row("Strength", val, true);
-    Slider("##noise_strength", &st.noiseStrength, 0, 100, false, 80);
-    ImGui::EndDisabled();
-    EndCard();
-
-    // Pitch
-    BeginCard("pitch");
-    CardHeader("Pitch", "##pitch_on", &st.pitchEnabled);
-    ImGui::BeginDisabled(!st.pitchEnabled);
-    std::snprintf(val, sizeof(val), "%+d st", st.pitch);
-    Row("Shift", val, true);
-    Slider("##pitch_value", &st.pitch, -12, 12, true, 0);
-
-    static const int presets[] = {-6, -3, 0, 3, 6};
-    const int n = IM_ARRAYSIZE(presets);
-    const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    const float bw = (ImGui::GetContentRegionAvail().x - spacing * (n - 1)) / n;
-    for (int i = 0; i < n; ++i) {
-        if (i) ImGui::SameLine();
-        const bool sel = (st.pitch == presets[i]);
-        if (sel) {
-            ImGui::PushStyleColor(ImGuiCol_Button, Hex(kAccent, 0.9f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Hex(kAccent));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, Hex(kAccent));
-        }
-        char lbl[16];
-        if (presets[i] == 0)
-            std::snprintf(lbl, sizeof(lbl), "0##p%d", i);
-        else
-            std::snprintf(lbl, sizeof(lbl), "%+d##p%d", presets[i], i);
-        if (ImGui::Button(lbl, ImVec2(bw, 0))) st.pitch = presets[i];
-        if (sel) ImGui::PopStyleColor(3);
-    }
-    ImGui::EndDisabled();
-    EndCard();
-
-    // Start / Stop
-    ImGui::Dummy(ImVec2(0, S(2)));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, S(12));
-    if (st.running) {
-        ImGui::PushStyleColor(ImGuiCol_Button, Hex(kRed, 0.18f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Hex(kRed, 0.28f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, Hex(kRed, 0.35f));
-        ImGui::PushStyleColor(ImGuiCol_Text, Hex(kRed));
-    } else {
-        ImGui::PushStyleColor(ImGuiCol_Button, Hex(kAccent));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Mix(Hex(kAccent), Hex(0xFFFFFF), 0.12f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, Mix(Hex(kAccent), Hex(0x000000), 0.12f));
-        ImGui::PushStyleColor(ImGuiCol_Text, Hex(0xFFFFFF));
-    }
-    if (ImGui::Button(st.running ? "Stop" : "Start", ImVec2(-FLT_MIN, S(46)))) st.running = !st.running;
-    ImGui::PopStyleColor(4);
+    // Body
+    const float footer = settingsOpen ? 0.0f : S(76);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, S(20)));
+    ImGui::BeginChild("##body", ImVec2(0, footer > 0 ? -footer : 0), ImGuiChildFlags_AlwaysUseWindowPadding, 0);
     ImGui::PopStyleVar();
+    if (settingsOpen)
+        DrawSettingsPage(app);
+    else
+        DrawEffectsPage(app);
+    ImGui::EndChild();
 
-    ImGui::PushStyleColor(ImGuiCol_Text, Hex(kMuted));
-    ImGui::TextWrapped("Preview build: the audio engine and virtual microphone are not implemented yet.");
-    ImGui::PopStyleColor();
+    if (!settingsOpen) DrawFooter(app, ImVec2(wp.x, wp.y + Hh - footer), W, footer);
 
     ImGui::End();
 }

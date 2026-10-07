@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="840" height="220" viewBox="0 0 840 220" role="img" aria-label="WinEffects">
   <defs>
     <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="60" y1="0" x2="190" y2="0">
-      <stop offset="0" stop-color="#5B8CFF"/>
-      <stop offset="1" stop-color="#B26BFF"/>
+      <stop offset="0" stop-color="#34D399"/>
+      <stop offset="1" stop-color="#22B8CF"/>
     </linearGradient>
   </defs>
   <rect width="840" height="220" rx="24" fill="#0E0F13"/>
