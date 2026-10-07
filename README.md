@@ -1,109 +1,43 @@
 <div align="center">
 
-# 🎙️ WinEffects
+<img src="assets/logo.svg" alt="WinEffects" width="640">
 
-**Лёгкий аналог EasyEffects для Windows: шумоподавление и смена голоса в реальном времени.**
+**English** | [Русский](README.ru.md)
 
-Микрофон → **RNNoise** → **Pitch** → виртуальный микрофон
-
-![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)
-![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
-![License](https://img.shields.io/badge/license-BSD--3--Clause-green)
-![Status](https://img.shields.io/badge/status-in%20development-orange)
+<a href="https://github.com/ohixx/wineffects"><img src="assets/star.svg" alt="Star this repo" width="300"></a>
 
 </div>
 
 ---
 
-## Зачем это нужно
+WinEffects is a small native Windows app, an EasyEffects-style tool with only two effects:
 
-На Linux есть EasyEffects: подключил микрофон, включил пару эффектов, и всё работает. На Windows
-подобное обычно либо тяжёлое, либо платное, либо перегружено функциями, которые тебе не нужны.
+- noise suppression with [RNNoise](https://gitlab.xiph.org/xiph/rnnoise);
+- pitch shifting, from -12 to +12 semitones.
 
-WinEffects делает **две вещи** и делает их хорошо:
+The processed signal is meant to be exposed as a virtual microphone with a configurable name.
 
-| Функция | Что делает |
-|---|---|
-| 🔇 **Шумоподавление** | Убирает клавиатуру, вентиляторы, шум комнаты нейросетью [RNNoise](https://gitlab.xiph.org/xiph/rnnoise) |
-| 🎚️ **Pitch** | Сдвигает высоту голоса от −12 до +12 полутонов, не меняя скорость речи |
+## Technical overview
 
-Обработанный звук появляется в системе как отдельный **виртуальный микрофон**. Его можно выбрать в
-Discord, OBS, Telegram, играх и любых других программах.
+Pipeline: `microphone -> WASAPI -> RNNoise (48 kHz, 10 ms frames) -> pitch shifter -> virtual microphone`.
 
-## Принципы
+- C++17, CMake, no Electron, Qt or .NET.
+- UI: [Dear ImGui](https://github.com/ocornut/imgui) on Direct3D 11, custom dark theme.
+- Planned audio stack: WASAPI, RNNoise, Signalsmith Stretch.
 
-- **Минимум памяти.** Нативный C++ без Electron, Qt и .NET. Цель: десятки МБ ОЗУ и почти нулевая нагрузка на CPU.
-- **Минимум задержки.** Целевой показатель: около 50 мс от микрофона до виртуального устройства.
-- **Минимализм.** Окно с двумя ползунками, переключателями и выбором устройств. Без лишних вкладок.
-- **Свободный код.** Лицензия BSD-3-Clause. Все зависимости тоже под permissive-лицензиями.
+## Status
 
-## Как это работает
+Early development. The interface is implemented; the audio engine and the virtual microphone are not.
 
-```
-┌──────────┐   ┌─────────────┐   ┌──────────┐   ┌──────────────┐   ┌─────────────┐
-│ Микрофон │──▶│   WASAPI    │──▶│ RNNoise  │──▶│ Pitch shift  │──▶│ Виртуальный │
-│          │   │  (capture)  │   │ 48 кГц   │   │ (Signalsmith)│   │  микрофон   │
-└──────────┘   └─────────────┘   └──────────┘   └──────────────┘   └─────────────┘
-```
+## Build
 
-Шумоподавление стоит **перед** pitch-эффектом. RNNoise обучен на обычной человеческой речи, и после
-сдвига высоты тона он работает заметно хуже.
-
-## Технологии
-
-| Задача | Решение | Лицензия |
-|---|---|---|
-| Язык и сборка | C++17, CMake | — |
-| Аудио | WASAPI (через [miniaudio](https://miniaud.io)) | MIT-0 / Public Domain |
-| Шумоподавление | [RNNoise](https://gitlab.xiph.org/xiph/rnnoise) | BSD-3-Clause |
-| Смена высоты | [Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch) | MIT |
-| Интерфейс | [Dear ImGui](https://github.com/ocornut/imgui) + DirectX 11, собственная тёмная тема | MIT |
-| Виртуальный микрофон | [VB-Cable](https://vb-audio.com/Cable/) на старте, собственный драйвер позже | — |
-
-Qt я не использую намеренно. Он под LGPL и тянет десятки мегабайт, а для двух ползунков это лишнее.
-
-## Планы
-
-- [x] Идея, архитектура, лицензия
-- [ ] Аудиоядро: захват, RNNoise, pitch, вывод в виртуальное устройство
-- [ ] Интерфейс: тёмная минималистичная тема, иконка в трее
-- [ ] Сохранение настроек и автозапуск
-- [ ] Индикаторы уровня до и после обработки
-- [ ] Горячие клавиши (включить/выключить эффект, пресеты)
-- [ ] Свой драйвер виртуального микрофона с произвольным названием
-- [ ] Установщик и портативная сборка
-
-## Виртуальный микрофон
-
-На первом этапе нужен [VB-Cable](https://vb-audio.com/Cable/) (бесплатный, ставится за минуту):
-
-1. Установи VB-Cable.
-2. В WinEffects выбери реальный микрофон на входе и `CABLE Input` на выходе.
-3. В Discord, OBS и другом софте выбери микрофоном `CABLE Output`.
-4. Название можно поменять в «Параметры звука → Запись → Свойства».
-
-Позже я хочу сделать собственный драйвер с любым названием устройства. Для него потребуется подпись
-драйвера: для личного использования хватит тестового режима Windows, а для раздачи другим нужна
-подпись Microsoft.
-
-## Сборка
-
-> Исходный код пока в разработке, раздел будет обновлён.
-
-Планируемые требования:
-
-- Windows 10/11
-- Visual Studio 2022 (MSVC) или MinGW-w64
-- CMake 3.20+
+Requires Windows 10/11, CMake 3.20+ and Visual Studio 2022 or MinGW-w64.
 
 ```bat
-git clone https://github.com/ohixx/wineffects.git
-cd wineffects
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build
 cmake --build build --config Release
 ```
 
-## Лицензия
+## License
 
-Проект распространяется под лицензией **BSD-3-Clause**, текст в файле [LICENSE](LICENSE).
-Зависимости используют собственные лицензии (BSD-3, MIT, MIT-0), которые совместимы с BSD-3.
+BSD 3-Clause, see [LICENSE](LICENSE).
