@@ -141,7 +141,7 @@ public:
 
 private:
     void configureStretch(int sampleRate) {
-        stretch_.configure(1, static_cast<int>(sampleRate * 0.075), static_cast<int>(sampleRate * 0.02));
+        stretch_.configure(1, static_cast<int>(sampleRate * 0.065), static_cast<int>(sampleRate * 0.017));
         stretch_.reset();
         stretchLatency_ = stretch_.inputLatency() + stretch_.outputLatency();
     }
@@ -408,7 +408,7 @@ private:
     }
 
     void configure(int sampleRate) {
-        stretch_.configure(1, static_cast<int>(sampleRate * 0.085), static_cast<int>(sampleRate * 0.0225));
+        stretch_.configure(1, static_cast<int>(sampleRate * 0.065), static_cast<int>(sampleRate * 0.017));
         stretch_.reset();
         latency_ = stretch_.inputLatency() + stretch_.outputLatency();
         applied_ = 1000.0f;  // force the first update

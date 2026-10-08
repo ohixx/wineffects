@@ -59,6 +59,7 @@ struct Sink {
     size_t prime = kBlockSize * 2, maxFill = kBlockSize * 8, target = kBlockSize * 3;
     std::atomic<unsigned>* glitches = nullptr;
     std::atomic<float>* level = nullptr;  // peak of the samples delivered to the device
+    unsigned callbacks = 0;               // glitches are not counted while the streams settle (first ~3 s)
 };
 
 void PlaybackCallback(ma_device* dev, void* output, const void*, ma_uint32 frames) {
@@ -66,11 +67,12 @@ void PlaybackCallback(ma_device* dev, void* output, const void*, ma_uint32 frame
     float* out = static_cast<float*>(output);
     Ring& ring = sink->ring;
 
+    const bool settled = ++sink->callbacks > 300;
     size_t avail = ring.available();
     if (avail > sink->maxFill) {
         ring.skip(avail - sink->target);
         avail = sink->target;
-        sink->glitches->fetch_add(1, std::memory_order_relaxed);
+        if (settled) sink->glitches->fetch_add(1, std::memory_order_relaxed);
     }
     if (!sink->primed) {
         if (avail < sink->prime) {
@@ -96,7 +98,7 @@ void PlaybackCallback(ma_device* dev, void* output, const void*, ma_uint32 frame
     if (done < frames) {  // underrun: output silence and rebuffer
         std::memset(out + 2 * done, 0, sizeof(float) * 2 * (frames - done));
         sink->primed = false;
-        sink->glitches->fetch_add(1, std::memory_order_relaxed);
+        if (settled) sink->glitches->fetch_add(1, std::memory_order_relaxed);
     }
     if (sink->level) sink->level->store(std::max(peak, sink->level->load(std::memory_order_relaxed) * 0.85f));
 }
@@ -183,10 +185,11 @@ struct Engine::Impl {
 
     // Initialise a stereo playback device that drains `sink.ring`.
     ma_result openSink(Sink& sink, const ma_device_id* id, int bufferMs) {
-        const size_t blocks = static_cast<size_t>(std::clamp(bufferMs, 10, 200)) / 10;
-        sink.prime = kBlockSize * blocks;
-        sink.target = kBlockSize * (blocks + 1);
-        sink.maxFill = kBlockSize * (blocks * 3 + 2);
+        const size_t prime = static_cast<size_t>(std::clamp(bufferMs, 10, 200)) * (kSampleRate / 1000);
+        sink.prime = prime;
+        sink.target = prime + kBlockSize;
+        sink.maxFill = prime * 3 + 2 * kBlockSize;
+        sink.callbacks = 0;
         sink.glitches = &glitches;
         ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
         cfg.playback.pDeviceID = id;

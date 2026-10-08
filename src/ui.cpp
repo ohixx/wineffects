@@ -630,7 +630,7 @@ void DrawSettingsPage(App& app) {
         std::snprintf(title, sizeof(title), "Audio buffer: %d ms", s.bufferMs);
         SettingRow(title, "Raise it if the sound crackles or stutters; lower it for less delay.", cw, [&](float) {
             ImGui::PushID("##buffer");
-            if (Slider("##bufms", &s.bufferMs, 10, 100, false, 20)) {
+            if (Slider("##bufms", &s.bufferMs, 10, 100, false, 15)) {
                 app.dirty = true;
                 restartPending = true;
             }

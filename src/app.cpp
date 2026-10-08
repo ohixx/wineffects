@@ -87,6 +87,7 @@ void App::load() {
         else if (key == "buffer_ms") {
             try {
                 settings.bufferMs = std::clamp(std::stoi(val), 10, 100);
+                if (settings.bufferMs == 20) settings.bufferMs = 15;  // the old default; 15 ms is enough and 5 ms faster
             } catch (...) {
             }
         }

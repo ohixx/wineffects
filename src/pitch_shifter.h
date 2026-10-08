@@ -16,11 +16,11 @@
 // All buffers are allocated in configure(), so process() is safe to call from the audio thread.
 class PitchShifter {
 public:
-    void configure(int sampleRate) {
+    void configure(int sampleRate, int sequenceMs = 24, int overlapMs = 5, int seekMs = 12) {
         sampleRate_ = sampleRate;
-        sequence_ = sampleRate * 30 / 1000;   // 30 ms segments
-        overlap_ = sampleRate * 6 / 1000;     // 6 ms cross-fade
-        seek_ = sampleRate * 12 / 1000;       // 12 ms search window (more than one period of a low voice)
+        sequence_ = sampleRate * sequenceMs / 1000;  // segments
+        overlap_ = sampleRate * overlapMs / 1000;    // cross-fade
+        seek_ = sampleRate * seekMs / 1000;          // search window (should cover a period of a low voice)
         const size_t cap = 1 << 15;
         in_.init(cap);
         stretched_.init(cap);
@@ -28,7 +28,6 @@ public:
         mid_.assign(overlap_, 0.0f);
         window_.resize(overlap_);
         for (int i = 0; i < overlap_; ++i) window_[i] = (i + 0.5f) / overlap_;
-        prime_ = (sequence_ - overlap_) + 720;
         reset();
         setRatio(1.0f);
     }
@@ -44,6 +43,7 @@ public:
         skipFract_ = 0.0;
         pos_ = 1.0;
         primed_ = false;
+        if (primeOverride_ < 0) prime_ = kBlock;
         lp_[0] = lp_[1] = Biquad();
     }
 
@@ -84,8 +84,10 @@ public:
         }
     }
 
-    // Approximate delay in samples.
-    int latency() const { return sequence_ + seek_ / 2 + prime_ - (sequence_ - overlap_); }
+    // Approximate delay in samples (measured on bursts): input a stretch step must collect, plus the
+    // first finished burst it delivers.
+    int latency() const { return sequence_ + seek_ - kBlock + static_cast<int>((sequence_ - overlap_) / ratio_ / 2); }
+    void forcePrime(int samples) { primeOverride_ = samples; prime_ = samples; }  // for tests
     unsigned underruns() const { return underruns_; }
 
 private:
@@ -206,8 +208,9 @@ private:
         pos_ -= drop;
     }
 
+    static constexpr int kBlock = 480;
     int sampleRate_ = 48000;
-    int sequence_ = 1440, overlap_ = 288, seek_ = 576, prime_ = 1632;
+    int sequence_ = 1440, overlap_ = 288, seek_ = 576, prime_ = kBlock, primeOverride_ = -1;
     float ratio_ = 1.0f;
     bool filter_ = false;
     Biquad lp_[2];

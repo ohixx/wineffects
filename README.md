@@ -51,7 +51,7 @@ Settings also cover permanent monitoring through headphones, start with Windows,
 - C++17 and CMake. No Electron, Qt or .NET; one static executable.
 - Audio I/O: [miniaudio](https://miniaud.io). Interface: [Dear ImGui](https://github.com/ocornut/imgui) on Direct3D 11.
 - Lock-free ring buffers between devices; the audio thread never allocates.
-- Estimated latency: about 45 ms with noise suppression only; pitch and Female add 50 to 75 ms.
+- Latency (the app shows the estimate): about 40 ms for the audio path itself, plus 20 ms for noise suppression, 30 to 45 ms for Pitch (Natural) and 65 ms for Pitch (Smooth) and Female. The audio buffer in Settings trades delay for stability.
 
 ## Status
 

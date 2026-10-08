@@ -11,7 +11,7 @@ struct EngineConfig {
     std::string output;   // playback device name (the virtual cable), empty = system default
     std::string monitor;  // headphones device name, empty = system default
     bool monitorEnabled = false;
-    int bufferMs = 20;  // playback buffer: larger = fewer dropouts, more delay
+    int bufferMs = 15;  // playback buffer: larger = fewer dropouts, more delay
 };
 
 // Microphone -> effect chain -> output device (and optionally a monitor device).
