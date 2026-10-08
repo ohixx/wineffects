@@ -14,7 +14,8 @@ struct Settings {
     bool autostart = false;       // start with Windows
     bool closeToTray = true;      // closing the window hides it
     bool startMinimized = false;  // start hidden in the tray
-    int bufferMs = 15;             // playback buffer
+    int bufferMs = 5;              // cushion in the playback queue
+    bool lowLatencyDevices = true; // smallest device periods the drivers allow
 };
 
 // Everything the window and the tray share.

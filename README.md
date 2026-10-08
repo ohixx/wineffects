@@ -23,7 +23,7 @@ WinEffects is a small native Windows app in the spirit of EasyEffects. It takes 
 
 Effects available now:
 
-- **Noise suppression**: [RNNoise](https://gitlab.xiph.org/xiph/rnnoise) with an adjustable strength.
+- **Noise suppression**: [RNNoise](https://gitlab.xiph.org/xiph/rnnoise) with an adjustable strength. *Fast* mode cuts 10 ms of delay.
 - **Pitch**: -12 to +12 semitones, speech speed unchanged. Two methods: *Natural* (time-domain, like SoundTouch in EasyEffects) and *Smooth* ([Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch), keeps your timbre).
 - **Female**: turns any voice, deep or high, into a female one. Pick how old she sounds (10 to 70). It tracks your average pitch and shifts it by one slowly changing ratio, so your intonation and manner of speech stay; formants move along, and breath and brightness add the airy colour of a woman's voice. *Max shift* limits how far a deep voice is pushed up: more is more feminine but starts to sound like a chipmunk.
 - **Trash**: loud, noisy, muffled sound of a blown-out cheap microphone, for beefs and toxic battles. Distortion, muffle, bit crush, noise and crackle, loudness.
@@ -51,7 +51,7 @@ Settings also cover permanent monitoring through headphones, start with Windows,
 - C++17 and CMake. No Electron, Qt or .NET; one static executable.
 - Audio I/O: [miniaudio](https://miniaud.io). Interface: [Dear ImGui](https://github.com/ocornut/imgui) on Direct3D 11.
 - Lock-free ring buffers between devices; the audio thread never allocates.
-- Latency (the app shows the estimate): about 40 ms for the audio path itself, plus 20 ms for noise suppression, 30 to 45 ms for Pitch (Natural) and 65 ms for Pitch (Smooth) and Female. The audio buffer in Settings trades delay for stability.
+- Latency (the app shows the estimate): about 20 ms for the audio path with low-latency devices, plus 10 ms for noise suppression in Fast mode (20 ms in Quality mode), about 30 ms for Pitch (Natural) and 65 ms for Pitch (Smooth) and Female. The audio buffer in Settings trades delay for stability.
 
 ## Status
 

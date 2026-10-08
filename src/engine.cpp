@@ -54,9 +54,11 @@ struct Sink {
     Ring ring;
     bool inited = false;
     bool primed = false;
-    // Buffering in samples: start playing once `prime` is queued; if the queue grows past
-    // `maxFill` the two devices are drifting apart, so trim it back to `target`.
-    size_t prime = kBlockSize * 2, maxFill = kBlockSize * 8, target = kBlockSize * 3;
+    // Playback starts with `prime` samples of silence as a cushion (the processed audio arrives in 10 ms
+    // blocks, so the queue needs some slack). If the queue grows past `maxFill` the two devices are
+    // drifting apart, so it is trimmed back to `target`.
+    size_t prime = 240, maxFill = kBlockSize * 6, target = kBlockSize * 2;
+    size_t pad = 0;  // silent samples still to play
     std::atomic<unsigned>* glitches = nullptr;
     std::atomic<float>* level = nullptr;  // peak of the samples delivered to the device
     unsigned callbacks = 0;               // glitches are not counted while the streams settle (first ~3 s)
@@ -75,16 +77,19 @@ void PlaybackCallback(ma_device* dev, void* output, const void*, ma_uint32 frame
         if (settled) sink->glitches->fetch_add(1, std::memory_order_relaxed);
     }
     if (!sink->primed) {
-        if (avail < sink->prime) {
-            std::memset(out, 0, sizeof(float) * 2 * frames);
-            return;
-        }
+        sink->pad = sink->prime;
         sink->primed = true;
     }
 
     float chunk[512];
     float peak = 0;
     ma_uint32 done = 0;
+    if (sink->pad > 0) {
+        const ma_uint32 silent = static_cast<ma_uint32>(std::min<size_t>(sink->pad, frames));
+        std::memset(out, 0, sizeof(float) * 2 * silent);
+        sink->pad -= silent;
+        done = silent;
+    }
     while (done < frames) {
         const size_t want = std::min<size_t>(512, frames - done);
         const size_t got = ring.read(chunk, want);
@@ -122,7 +127,8 @@ struct Engine::Impl {
     Sink output, monitor;
     bool monitorOn = false;
     std::atomic<bool> running{false};
-    int bufferMs = 20;
+    int bufferMs = 5;
+    double capturePeriodMs = 10, playbackPeriodMs = 10;  // what the drivers actually gave us
 
     std::shared_ptr<const Chain> chain = std::make_shared<const Chain>();
 
@@ -184,24 +190,32 @@ struct Engine::Impl {
     }
 
     // Initialise a stereo playback device that drains `sink.ring`.
-    ma_result openSink(Sink& sink, const ma_device_id* id, int bufferMs) {
-        const size_t prime = static_cast<size_t>(std::clamp(bufferMs, 10, 200)) * (kSampleRate / 1000);
+    ma_result openSink(Sink& sink, const ma_device_id* id, int bufferMs, bool lowLatency) {
+        const size_t prime = static_cast<size_t>(std::clamp(bufferMs, 2, 200)) * (kSampleRate / 1000);
         sink.prime = prime;
         sink.target = prime + kBlockSize;
         sink.maxFill = prime * 3 + 2 * kBlockSize;
         sink.callbacks = 0;
         sink.glitches = &glitches;
-        ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
-        cfg.playback.pDeviceID = id;
-        cfg.playback.format = ma_format_f32;
-        cfg.playback.channels = 2;
-        cfg.sampleRate = kSampleRate;
-        cfg.periodSizeInMilliseconds = 10;
-        cfg.dataCallback = PlaybackCallback;
-        cfg.pUserData = &sink;
         sink.ring.reset();
         sink.primed = false;
-        const ma_result r = ma_device_init(&context, &cfg, &sink.device);
+        sink.pad = 0;
+
+        // A period of 1 ms means "as small as the driver allows" (WASAPI's low-latency shared mode);
+        // if the driver refuses, fall back to the normal 10 ms.
+        ma_result r = MA_ERROR;
+        for (int periodMs : {lowLatency ? 1 : 10, 10}) {
+            ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
+            cfg.playback.pDeviceID = id;
+            cfg.playback.format = ma_format_f32;
+            cfg.playback.channels = 2;
+            cfg.sampleRate = kSampleRate;
+            cfg.periodSizeInMilliseconds = periodMs;
+            cfg.dataCallback = PlaybackCallback;
+            cfg.pUserData = &sink;
+            r = ma_device_init(&context, &cfg, &sink.device);
+            if (r == MA_SUCCESS || periodMs == 10) break;
+        }
         sink.inited = (r == MA_SUCCESS);
         return r;
     }
@@ -282,13 +296,13 @@ std::string Engine::start(const EngineConfig& cfg) {
     m.output.level = &m.deviceLevel;
     m.monitor.level = nullptr;
     m.bufferMs = cfg.bufferMs;
-    ma_result r = m.openSink(m.output, outId, cfg.bufferMs);
+    ma_result r = m.openSink(m.output, outId, cfg.bufferMs, cfg.lowLatencyDevices);
     if (r != MA_SUCCESS) {
         m.closeDevices();
         return std::string("Cannot open output device: ") + ma_result_description(r);
     }
     if (cfg.monitorEnabled) {
-        r = m.openSink(m.monitor, monId, cfg.bufferMs);
+        r = m.openSink(m.monitor, monId, cfg.bufferMs, cfg.lowLatencyDevices);
         if (r != MA_SUCCESS) {
             m.closeDevices();
             return std::string("Cannot open headphones: ") + ma_result_description(r);
@@ -296,20 +310,31 @@ std::string Engine::start(const EngineConfig& cfg) {
         m.monitorOn = true;
     }
 
-    ma_device_config cc = ma_device_config_init(ma_device_type_capture);
-    cc.capture.pDeviceID = inId;
-    cc.capture.format = ma_format_f32;
-    cc.capture.channels = 1;
-    cc.sampleRate = kSampleRate;
-    cc.periodSizeInMilliseconds = 10;
-    cc.dataCallback = Impl::CaptureCallback;
-    cc.pUserData = &m;
-    r = ma_device_init(&m.context, &cc, &m.capture);
+    r = MA_ERROR;
+    for (int periodMs : {cfg.lowLatencyDevices ? 1 : 10, 10}) {
+        ma_device_config cc = ma_device_config_init(ma_device_type_capture);
+        cc.capture.pDeviceID = inId;
+        cc.capture.format = ma_format_f32;
+        cc.capture.channels = 1;
+        cc.sampleRate = kSampleRate;
+        cc.periodSizeInMilliseconds = periodMs;
+        cc.dataCallback = Impl::CaptureCallback;
+        cc.pUserData = &m;
+        r = ma_device_init(&m.context, &cc, &m.capture);
+        if (r == MA_SUCCESS || periodMs == 10) break;
+    }
     if (r != MA_SUCCESS) {
         m.closeDevices();
         return std::string("Cannot open microphone: ") + ma_result_description(r);
     }
     m.captureInited = true;
+
+    // Remember the periods that were really granted, for the latency readout.
+    if (m.capture.capture.internalSampleRate > 0)
+        m.capturePeriodMs = 1000.0 * m.capture.capture.internalPeriodSizeInFrames / m.capture.capture.internalSampleRate;
+    if (m.output.device.playback.internalSampleRate > 0)
+        m.playbackPeriodMs =
+            1000.0 * m.output.device.playback.internalPeriodSizeInFrames / m.output.device.playback.internalSampleRate;
 
     if ((r = ma_device_start(&m.output.device)) != MA_SUCCESS ||
         (m.monitorOn && (r = ma_device_start(&m.monitor.device)) != MA_SUCCESS) ||
@@ -376,8 +401,10 @@ int Engine::latencyMs() const {
     int samples = 0;
     for (const auto& e : chain())
         if (e->enabled.load()) samples += e->latencySamples();
-    // Device periods (capture + playback) and the playback prime buffer.
-    return samples * 1000 / kSampleRate + 25 + impl_->bufferMs;
+    // A sample waits for its capture period, then (on average) half a 10 ms block, then the cushion in the
+    // playback queue (plus half a block of queue slack) and one playback period.
+    const double path = impl_->capturePeriodMs + 5.0 + impl_->bufferMs + 5.0 + impl_->playbackPeriodMs;
+    return static_cast<int>(samples * 1000.0 / kSampleRate + path + 0.5);
 }
 
 float Engine::deviceLevel() const { return impl_->deviceLevel.load(); }

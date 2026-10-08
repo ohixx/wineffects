@@ -18,16 +18,22 @@ extern const unsigned char rnnoise_blob_end[];
 namespace {
 
 // RNNoise 0.2: recurrent neural network trained to remove background noise from speech.
+//
+// RNNoise looks one frame ahead: it applies the gains it computes to the *previous* frame. That costs
+// 20 ms of delay. "Fast" applies them to the current frame instead (10 ms delay): stationary noise (fans,
+// hum, hiss) is removed just as well, sharp keyboard clicks a little less.
 class NoiseSuppression : public Effect {
 public:
     NoiseSuppression() {
         params.emplace_back("strength", "Strength", 0, 100, 100, "%d%%");
         // Mutes the output whenever RNNoise thinks nobody is speaking (like EasyEffects' VAD threshold).
         params.emplace_back("gate", "Voice gate", 0, 100, 0, "%d%%");
+        params.emplace_back("mode", "Mode", 0, 1, 1, "%d").choices = {"Quality", "Fast"};
 
         static RNNModel* model = rnnoise_model_from_buffer(
             rnnoise_blob_start, static_cast<int>(rnnoise_blob_end - rnnoise_blob_start));
         state_ = rnnoise_create(model);
+        applyMode(1);
     }
     ~NoiseSuppression() override {
         if (state_) rnnoise_destroy(state_);
@@ -41,6 +47,8 @@ public:
         if (!state_ || count != kBlockSize) return;
         const float wet = params[0].value.load(std::memory_order_relaxed) / 100.0f;
         const float threshold = params[1].value.load(std::memory_order_relaxed) / 100.0f;
+        const int mode = params[2].value.load(std::memory_order_relaxed);
+        if (mode != mode_) applyMode(mode);
 
         float in[kBlockSize], out[kBlockSize];
         for (int i = 0; i < kBlockSize; ++i) in[i] = s[i] * 32768.0f;  // RNNoise expects 16-bit range
@@ -57,25 +65,35 @@ public:
         const float target = hold_ > 0 ? 1.0f : 0.0f;
 
         for (int i = 0; i < kBlockSize; ++i) {
-            // The network delays its output by two frames, so the dry signal has to wait as well.
+            // The network delays its output, so the dry signal has to wait as well.
             const float dry = delay_[delayPos_];
             delay_[delayPos_] = s[i];
-            delayPos_ = (delayPos_ + 1) % kDelay;
+            delayPos_ = (delayPos_ + 1) % delayLen_;
 
             gain_ += (target - gain_) * (target > gain_ ? 0.02f : 0.0007f);  // ~1 ms attack, ~30 ms release
             s[i] = (out[i] * (1.0f / 32768.0f) * wet + dry * (1.0f - wet)) * gain_;
         }
     }
 
-    int latencySamples() const override { return kDelay; }
+    int latencySamples() const override { return delayLen_; }
 
 private:
-    static constexpr int kDelay = 2 * kBlockSize;  // measured: 960 samples
-    static constexpr int kHoldBlocks = 15;         // keep the gate open for 150 ms after speech
+    static constexpr int kMaxDelay = 2 * kBlockSize;  // measured: 960 samples (480 in fast mode)
+    static constexpr int kHoldBlocks = 15;            // keep the gate open for 150 ms after speech
+
+    void applyMode(int mode) {
+        mode_ = mode;
+        rnnoise_set_low_latency(state_, mode == 1);
+        delayLen_ = mode == 1 ? kBlockSize : kMaxDelay;
+        std::memset(delay_, 0, sizeof(delay_));
+        delayPos_ = 0;
+    }
 
     DenoiseState* state_ = nullptr;
-    float delay_[kDelay] = {};
+    float delay_[kMaxDelay] = {};
     int delayPos_ = 0;
+    int delayLen_ = kMaxDelay;
+    int mode_ = -1;
     int hold_ = kHoldBlocks;
     float gain_ = 1.0f;
 };

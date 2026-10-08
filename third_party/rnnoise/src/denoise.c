@@ -84,7 +84,7 @@ struct DenoiseState {
   kiss_fft_cpx delayed_P[FREQ_SIZE];
   float delayed_Ex[NB_BANDS], delayed_Ep[NB_BANDS];
   float delayed_Exp[NB_BANDS];
-
+  int low_latency; /* WinEffects: apply the gains to the current frame instead of the delayed one (10 ms less delay) */
 };
 
 static void compute_band_energy(float *bandE, const kiss_fft_cpx *X) {
@@ -282,6 +282,10 @@ int rnnoise_get_frame_size() {
   return FRAME_SIZE;
 }
 
+void rnnoise_set_low_latency(DenoiseState *st, int enabled) {
+  st->low_latency = enabled;
+}
+
 int rnnoise_init(DenoiseState *st, RNNModel *model) {
   memset(st, 0, sizeof(*st));
 #if !TRAINING
@@ -475,7 +479,12 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
 #if !TRAINING
     compute_rnn(&st->model, &st->rnn, g, &vad_prob, features, st->arch);
 #endif
-    rnn_pitch_filter(st->delayed_X, st->delayed_P, st->delayed_Ex, st->delayed_Ep, st->delayed_Exp, g);
+    kiss_fft_cpx *tX = st->low_latency ? X : st->delayed_X;
+    kiss_fft_cpx *tP = st->low_latency ? P : st->delayed_P;
+    float *tEx = st->low_latency ? Ex : st->delayed_Ex;
+    float *tEp = st->low_latency ? Ep : st->delayed_Ep;
+    float *tExp = st->low_latency ? Exp : st->delayed_Exp;
+    rnn_pitch_filter(tX, tP, tEx, tEp, tExp, g);
     for (i=0;i<NB_BANDS;i++) {
       float alpha = .6f;
       g[i] = MAX16(g[i], alpha*st->lastg[i]);
@@ -484,12 +493,12 @@ float rnnoise_process_frame(DenoiseState *st, float *out, const float *in) {
     interp_band_gain(gf, g);
 #if 1
     for (i=0;i<FREQ_SIZE;i++) {
-      st->delayed_X[i].r *= gf[i];
-      st->delayed_X[i].i *= gf[i];
+      tX[i].r *= gf[i];
+      tX[i].i *= gf[i];
     }
 #endif
   }
-  frame_synthesis(st, out, st->delayed_X);
+  frame_synthesis(st, out, st->low_latency ? X : st->delayed_X);
 
   RNN_COPY(st->delayed_X, X, FREQ_SIZE);
   RNN_COPY(st->delayed_P, P, FREQ_SIZE);

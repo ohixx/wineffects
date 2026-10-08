@@ -84,10 +84,11 @@ void App::load() {
         else if (key == "mic_name") settings.micName = val;
         else if (key == "close_to_tray") settings.closeToTray = Bool(val);
         else if (key == "start_minimized") settings.startMinimized = Bool(val);
+        else if (key == "low_latency_devices") settings.lowLatencyDevices = Bool(val);
         else if (key == "buffer_ms") {
             try {
-                settings.bufferMs = std::clamp(std::stoi(val), 10, 100);
-                if (settings.bufferMs == 20) settings.bufferMs = 15;  // the old default; 15 ms is enough and 5 ms faster
+                settings.bufferMs = std::clamp(std::stoi(val), 2, 100);
+                if (settings.bufferMs == 15 || settings.bufferMs == 20) settings.bufferMs = 5;  // old defaults
             } catch (...) {
             }
         }
@@ -129,6 +130,7 @@ void App::save() {
     out << "close_to_tray=" << settings.closeToTray << "\n";
     out << "start_minimized=" << settings.startMinimized << "\n";
     out << "buffer_ms=" << settings.bufferMs << "\n";
+    out << "low_latency_devices=" << settings.lowLatencyDevices << "\n";
 
     for (const auto& e : engine.chain()) {
         out << "\n[effect]\n";
@@ -146,6 +148,7 @@ void App::start() {
     cfg.monitor = settings.monitor;
     cfg.monitorEnabled = settings.monitorEnabled || soundCheck;
     cfg.bufferMs = settings.bufferMs;
+    cfg.lowLatencyDevices = settings.lowLatencyDevices;
     error = engine.start(cfg);
 }
 

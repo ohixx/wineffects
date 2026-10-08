@@ -16,7 +16,7 @@
 // All buffers are allocated in configure(), so process() is safe to call from the audio thread.
 class PitchShifter {
 public:
-    void configure(int sampleRate, int sequenceMs = 24, int overlapMs = 5, int seekMs = 12) {
+    void configure(int sampleRate, int sequenceMs = 20, int overlapMs = 4, int seekMs = 12) {
         sampleRate_ = sampleRate;
         sequence_ = sampleRate * sequenceMs / 1000;  // segments
         overlap_ = sampleRate * overlapMs / 1000;    // cross-fade

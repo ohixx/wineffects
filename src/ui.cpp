@@ -628,15 +628,25 @@ void DrawSettingsPage(App& app) {
     {
         char title[48];
         std::snprintf(title, sizeof(title), "Audio buffer: %d ms", s.bufferMs);
-        SettingRow(title, "Raise it if the sound crackles or stutters; lower it for less delay.", cw, [&](float) {
+        SettingRow(title, "Cushion before the output. Raise it if the sound crackles or stutters; lower it for less delay.", cw, [&](float) {
             ImGui::PushID("##buffer");
-            if (Slider("##bufms", &s.bufferMs, 10, 100, false, 15)) {
+            if (Slider("##bufms", &s.bufferMs, 2, 100, false, 5)) {
                 app.dirty = true;
                 restartPending = true;
             }
             ImGui::PopID();
         });
     }
+    SettingRow("Ultra-low latency devices",
+               "Asks Windows for the smallest audio period the drivers allow. Turn it off if the sound crackles "
+               "even with a bigger buffer.",
+               S(36), [&](float fh) {
+                   ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (fh - S(20)) * 0.5f);
+                   if (Toggle("##lowlat", &s.lowLatencyDevices)) {
+                       app.dirty = true;
+                       restartPending = true;
+                   }
+               });
     ImGui::BeginDisabled(!s.monitorEnabled);
     SettingRow("Headphones", nullptr, cw, [&](float) {
         DeviceCombo("##monitor_dev", s.monitor, app.engine.outputDevices(), cw, devicesChanged);

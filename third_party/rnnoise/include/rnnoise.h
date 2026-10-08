@@ -93,6 +93,10 @@ RNNOISE_EXPORT void rnnoise_destroy(DenoiseState *st);
  */
 RNNOISE_EXPORT float rnnoise_process_frame(DenoiseState *st, float *out, const float *in);
 
+/** WinEffects addition: apply the gains to the current frame instead of the previous one. Saves 10 ms of
+ * delay (480 instead of 960 samples) at a small cost in quality at speech onsets. */
+RNNOISE_EXPORT void rnnoise_set_low_latency(DenoiseState *st, int enabled);
+
 /**
  * Load a model from a memory buffer
  *
