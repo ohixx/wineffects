@@ -1,12 +1,21 @@
-<div align="center">
+<p align="center">
+  <img src="assets/logo.svg" width="480" alt="WinEffects">
+</p>
 
-<img src="assets/logo.svg" alt="WinEffects" width="640">
+<p align="center">
+  <a href="README.md">English</a> | <b>Русский</b>
+</p>
 
-[English](README.md) | **Русский**
+<p align="center">
+  <a href="https://github.com/ohixx/wineffects/stargazers"><img src="https://img.shields.io/github/stars/ohixx/wineffects?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=f5af3c" alt="Star this repo"></a>
+</p>
 
-<a href="https://github.com/ohixx/wineffects"><img src="assets/star.svg" alt="Поставь звезду" width="300"></a>
-
-</div>
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4?style=flat-square" alt="Windows 10 | 11">
+  <img src="https://img.shields.io/badge/C%2B%2B-17-00599c?style=flat-square" alt="C++17">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSD--3-3ac97b?style=flat-square" alt="BSD-3"></a>
+  <img src="https://img.shields.io/badge/status-alpha-f5af3c?style=flat-square" alt="alpha">
+</p>
 
 ---
 
@@ -52,6 +61,10 @@ cmake --build build -j
 ```
 
 В Windows с MSYS2/MinGW-w64 работает то же самое: `cmake -B build -G Ninja`. Зависимости скачивает сам CMake.
+
+## Поддержать проект
+
+Если WinEffects вам пригодился, **[поставьте звезду](https://github.com/ohixx/wineffects)**: так проект проще найти другим, и он продолжает развиваться. Нашли баг или есть идея для эффекта? [Создайте issue](https://github.com/ohixx/wineffects/issues).
 
 ## Лицензия
 
