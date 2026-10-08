@@ -262,18 +262,66 @@ private:
     uint32_t rng_ = 2463534242u;
 };
 
+// RBJ filters used to colour the Female voice.
+struct Highpass {
+    float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
+    void set(float sampleRate, float cutoff, float q = 0.7071f) {
+        const float w = 2.0f * 3.14159265f * cutoff / sampleRate;
+        const float alpha = std::sin(w) / (2.0f * q), c = std::cos(w), a0 = 1.0f + alpha;
+        b0 = (1.0f + c) * 0.5f / a0;
+        b1 = -(1.0f + c) / a0;
+        b2 = b0;
+        a1 = -2.0f * c / a0;
+        a2 = (1.0f - alpha) / a0;
+    }
+    float tick(float x) {
+        const float y = b0 * x + z1;
+        z1 = b1 * x - a1 * y + z2;
+        z2 = b2 * x - a2 * y;
+        return y;
+    }
+};
+
+struct HighShelf {
+    float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
+    void set(float sampleRate, float freq, float gainDb) {
+        const float A = std::pow(10.0f, gainDb / 40.0f);
+        const float w = 2.0f * 3.14159265f * freq / sampleRate;
+        const float c = std::cos(w), sn = std::sin(w);
+        const float alpha = sn / 2.0f * std::sqrt(2.0f);  // shelf slope 1
+        const float beta = 2.0f * std::sqrt(A) * alpha;
+        const float a0 = (A + 1) - (A - 1) * c + beta;
+        b0 = A * ((A + 1) + (A - 1) * c + beta) / a0;
+        b1 = -2 * A * ((A - 1) + (A + 1) * c) / a0;
+        b2 = A * ((A + 1) + (A - 1) * c - beta) / a0;
+        a1 = 2 * ((A - 1) - (A + 1) * c) / a0;
+        a2 = ((A + 1) - (A - 1) * c - beta) / a0;
+    }
+    float tick(float x) {
+        const float y = b0 * x + z1;
+        z1 = b1 * x - a1 * y + z2;
+        z2 = b2 * x - a2 * y;
+        return y;
+    }
+};
+
 // Female: turns any voice into a female one while keeping how you speak.
 //
-// The speaker's average pitch is tracked, and the voice is shifted by one slowly changing ratio so
-// that this average lands on the target pitch for the chosen age. A constant ratio (instead of forcing
-// a fixed pitch) keeps the intonation, so the speech stays alive. The vocal tract shortens with the
-// ratio^0.3 rule of thumb: a deep male voice gets about +20% formants, a child about +30%, and a voice
-// that is already high is left alone.
+//  * The speaker's average pitch is tracked and the voice is shifted by ONE slowly changing ratio, so
+//    the melody of the speech survives (forcing a fixed pitch would sound like a robot).
+//  * The shift is limited ("Max shift"): pushing a deep voice a full octave and a half up is what makes
+//    a chipmunk. A deep voice ends up as a lower female voice instead, which is how real ones sound.
+//  * Gender is also carried by the vocal tract, so the formants move with the shift (ratio^0.3:
+//    about +17% for a typical man, +30% for a child, nothing for a voice that is already high).
+//  * Breath and brightness add the airy, bright colour women's voices have and hide shifting artefacts.
 class Female : public Effect {
 public:
     Female() {
         params.emplace_back("age", "Age", 10, 70, 22, "%d yrs");
         params.emplace_back("amount", "Amount", 0, 100, 100, "%d%%");
+        params.emplace_back("limit", "Max shift", 0, 16, 10, "%d st");
+        params.emplace_back("breath", "Breath", 0, 100, 30, "%d%%");
+        params.emplace_back("bright", "Brightness", 0, 100, 40, "%d%%");
         configure(kSampleRate);
         tracker_.reset();
     }
@@ -294,10 +342,15 @@ public:
 
         const int age = params[0].value.load(std::memory_order_relaxed);
         const float amount = params[1].value.load(std::memory_order_relaxed) / 100.0f;
+        const float cap = params[2].value.load(std::memory_order_relaxed) / 12.0f;  // octaves
+        const float breath = params[3].value.load(std::memory_order_relaxed) / 100.0f;
+        const int bright = params[4].value.load(std::memory_order_relaxed);
 
+        // How far to move: towards an adult woman's pitch, but never beyond the cap; age adds on top.
         const float f0 = tracker_.averageF0();
-        float wanted = std::log2(targetF0(age) / f0);
-        wanted = std::clamp(wanted, -1.0f, 1.6f) * amount;
+        const float adult = targetF0(22);
+        float wanted = std::min(std::log2(adult / f0), cap) + 0.8f * std::log2(targetF0(age) / adult);
+        wanted = std::clamp(wanted, -0.5f, 1.6f) * amount;
         if (first_) {
             smooth_ = wanted;
             first_ = false;
@@ -311,12 +364,27 @@ public:
             stretch_.setFormantFactor(formants / ratio);  // overall formant shift = ratio * this = formants
             applied_ = smooth_;
         }
+        if (bright != lastBright_) {
+            shelf_.set(kSampleRate, 3200.0f, 5.0f * bright / 100.0f);
+            lastBright_ = bright;
+        }
 
         float tmp[kBlockSize];
         float* in[1] = {s};
         float* out[1] = {tmp};
         stretch_.process(in, count, out, count);
-        std::memcpy(s, tmp, sizeof(float) * count);
+
+        const float breathGain = breath * 0.36f;
+        for (int i = 0; i < count; ++i) {
+            float y = lowCut_.tick(tmp[i]);
+
+            // Breath: band-limited noise that follows the loudness of the voice, so it is silent in pauses.
+            const float a = std::fabs(y);
+            env_ += (a - env_) * (a > env_ ? 0.01f : 0.0008f);
+            y += noiseLp_.tick(noiseHp_.tick(white())) * env_ * breathGain;
+
+            s[i] = shelf_.tick(y);
+        }
     }
 
     int latencySamples() const override { return latency_; }
@@ -332,18 +400,33 @@ private:
         return f0[7];
     }
 
+    float white() {  // xorshift32
+        rng_ ^= rng_ << 13;
+        rng_ ^= rng_ >> 17;
+        rng_ ^= rng_ << 5;
+        return (rng_ >> 8) * (1.0f / 8388608.0f) - 1.0f;
+    }
+
     void configure(int sampleRate) {
-        stretch_.configure(1, static_cast<int>(sampleRate * 0.075), static_cast<int>(sampleRate * 0.02));
+        stretch_.configure(1, static_cast<int>(sampleRate * 0.085), static_cast<int>(sampleRate * 0.0225));
         stretch_.reset();
         latency_ = stretch_.inputLatency() + stretch_.outputLatency();
         applied_ = 1000.0f;  // force the first update
+        lowCut_.set(static_cast<float>(sampleRate), 90.0f);
+        noiseHp_.set(static_cast<float>(sampleRate), 2500.0f);
+        noiseLp_.set(static_cast<float>(sampleRate), 8000.0f);
+        lastBright_ = -1;
     }
 
     PitchTracker tracker_;
     signalsmith::stretch::SignalsmithStretch<float> stretch_;
-    float smooth_ = 0.0f, applied_ = 1000.0f;
+    Highpass lowCut_, noiseHp_;
+    Lowpass noiseLp_;
+    HighShelf shelf_;
+    float smooth_ = 0.0f, applied_ = 1000.0f, env_ = 0.0f;
     bool first_ = true;
-    int latency_ = 0;
+    int latency_ = 0, lastBright_ = -1;
+    uint32_t rng_ = 88172645u;
 };
 
 template <typename T>

@@ -25,7 +25,7 @@ Effects available now:
 
 - **Noise suppression**: [RNNoise](https://gitlab.xiph.org/xiph/rnnoise) with an adjustable strength.
 - **Pitch**: -12 to +12 semitones, speech speed unchanged. Two methods: *Natural* (time-domain, like SoundTouch in EasyEffects) and *Smooth* ([Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch), keeps your timbre).
-- **Female**: turns any voice, deep or high, into a female one. Pick how old she sounds (10 to 70). It tracks your average pitch and shifts it by one slowly changing ratio, so your intonation and manner of speech stay; the formants are moved along with it.
+- **Female**: turns any voice, deep or high, into a female one. Pick how old she sounds (10 to 70). It tracks your average pitch and shifts it by one slowly changing ratio, so your intonation and manner of speech stay; formants move along, and breath and brightness add the airy colour of a woman's voice. *Max shift* limits how far a deep voice is pushed up: more is more feminine but starts to sound like a chipmunk.
 - **Trash**: loud, noisy, muffled sound of a blown-out cheap microphone, for beefs and toxic battles. Distortion, muffle, bit crush, noise and crackle, loudness.
 
 The chain is editable: add, remove, reorder and toggle effects. New effects only need an `Effect` class with a few parameters; the UI is generated from it (see `src/effect.h`).
