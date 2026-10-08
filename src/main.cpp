@@ -201,7 +201,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     app.load();
     TrayAdd(hwnd, smallIcon);
 
-    if (app.settings.autoStartEngine) app.start();
+    app.start();
     if (!(minimizedArg || app.settings.startMinimized)) {
         ShowWindow(hwnd, SW_SHOWDEFAULT);
         UpdateWindow(hwnd);
@@ -216,6 +216,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
             DispatchMessage(&msg);
             continue;
         }
+
+        app.tick();
 
         // Hidden in the tray or minimized: nothing to draw, sleep until a message arrives.
         if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {

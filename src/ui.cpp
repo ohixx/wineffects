@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include <shellapi.h>
+
 #include "imgui.h"
 #include "misc/cpp/imgui_stdlib.h"
 #include "platform.h"
@@ -64,11 +66,12 @@ void LoadFonts(float scale) {
             std::snprintf(bold, sizeof(bold), "%s\\Fonts\\%s", dir, f.bold);
             if (GetFileAttributesA(regular) == INVALID_FILE_ATTRIBUTES) continue;
 
-            io.Fonts->AddFontFromFileTTF(regular, 15.0f * scale);
+            const ImWchar* ranges = io.Fonts->GetGlyphRangesCyrillic();  // device names are often Russian
+            io.Fonts->AddFontFromFileTTF(regular, 15.0f * scale, nullptr, ranges);
             if (GetFileAttributesA(bold) != INVALID_FILE_ATTRIBUTES) {
-                g_bold = io.Fonts->AddFontFromFileTTF(bold, 15.0f * scale);
-                g_small = io.Fonts->AddFontFromFileTTF(bold, 11.5f * scale);
-                g_title = io.Fonts->AddFontFromFileTTF(bold, 22.0f * scale);
+                g_bold = io.Fonts->AddFontFromFileTTF(bold, 15.0f * scale, nullptr, ranges);
+                g_small = io.Fonts->AddFontFromFileTTF(bold, 11.5f * scale, nullptr, ranges);
+                g_title = io.Fonts->AddFontFromFileTTF(bold, 22.0f * scale, nullptr, ranges);
             }
             return;
         }
@@ -366,7 +369,10 @@ void DrawEffectParams(App& app, Effect& e) {
         ImGui::PushID(p.key.c_str());
         int v = p.value.load();
         char text[32];
-        std::snprintf(text, sizeof(text), p.format.c_str(), v);
+        if (!p.choices.empty())
+            std::snprintf(text, sizeof(text), "%s", p.choices[static_cast<size_t>(std::clamp(v, 0, static_cast<int>(p.choices.size()) - 1))].c_str());
+        else
+            std::snprintf(text, sizeof(text), p.format.c_str(), v);
         ValueRow(p.label.c_str(), text);
         if (Slider("##slider", &v, p.min, p.max, p.centered, p.def)) {
             p.value.store(v);
@@ -415,7 +421,55 @@ void DrawAddMenu(App& app, const std::vector<std::shared_ptr<Effect>>& chain) {
     ImGui::EndPopup();
 }
 
+void DrawNoCableBanner(App& app) {
+    BeginCard("##nocable");
+    ImGui::PushFont(Or(g_bold));
+    ImGui::TextUnformatted("No virtual microphone found");
+    ImGui::PopFont();
+    ImGui::PushStyleColor(ImGuiCol_Text, Hex(kMuted));
+    ImGui::TextWrapped(
+        "WinEffects sends the processed sound to a virtual cable, which other programs see as a microphone. "
+        "Install VB-Cable (free), then press Check again.");
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0, S(2)));
+    if (Button("Get VB-Cable", ImVec2(S(126), S(30)), Look::Primary))
+        ShellExecuteW(nullptr, L"open", L"https://vb-audio.com/Cable/", nullptr, nullptr, SW_SHOWNORMAL);
+    ImGui::SameLine();
+    if (Button("Check again", ImVec2(S(110), S(30)))) {
+        app.engine.refreshDevices();
+        app.selectVirtualCable();
+    }
+    ImGui::EndChild();
+    ImGui::Dummy(ImVec2(0, S(2)));
+}
+
+// The virtual cable exists, but the sound is being sent somewhere else (speakers, headphones...).
+void DrawWrongOutputBanner(App& app, const std::string& cable) {
+    BeginCard("##wrongout", true);
+    ImGui::PushFont(Or(g_bold));
+    ImGui::TextUnformatted("The sound is not going to the virtual microphone");
+    ImGui::PopFont();
+    ImGui::PushStyleColor(ImGuiCol_Text, Hex(kMuted));
+    ImGui::TextWrapped("Output is set to \"%s\", so Discord and other apps cannot hear WinEffects. "
+                       "Send it to the virtual cable instead.",
+                       app.settings.output.empty() ? "System default" : app.settings.output.c_str());
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0, S(2)));
+    if (Button("Use CABLE Input", ImVec2(S(150), S(30)), Look::Primary)) {
+        app.settings.output = cable;
+        app.dirty = true;
+        app.restartIfRunning();
+    }
+    ImGui::EndChild();
+    ImGui::Dummy(ImVec2(0, S(2)));
+}
+
 void DrawEffectsPage(App& app) {
+    const std::string cable = app.virtualCableName();
+    if (cable.empty())
+        DrawNoCableBanner(app);
+    else if (app.settings.output.find("CABLE") == std::string::npos)
+        DrawWrongOutputBanner(app, cable);
     // Errors from the last Start attempt.
     if (!app.error.empty()) {
         BeginCard("##error", true);
@@ -522,10 +576,13 @@ void DrawEffectsPage(App& app) {
     }
 }
 
+bool pendingBufferRestart = false;
+
 void DrawSettingsPage(App& app) {
     Settings& s = app.settings;
     const float cw = std::min(S(270), ImGui::GetContentRegionAvail().x * 0.5f);
     bool devicesChanged = false;
+    bool restartPending = false;
 
     ImGui::PushFont(Or(g_title));
     ImGui::TextUnformatted("Settings");
@@ -550,6 +607,14 @@ void DrawSettingsPage(App& app) {
     });
     SettingRow("Virtual microphone output", "Where the processed sound goes. Pick the input of a virtual cable, e.g. CABLE Input.",
                cw, [&](float) { DeviceCombo("##output", s.output, app.engine.outputDevices(), cw, devicesChanged); });
+    SettingRow("Test the virtual microphone",
+               "Plays a 2-second beep into the output. In Windows (Sound > Recording > CABLE Output) or Discord's "
+               "mic test the level should move.",
+               S(130), [&](float) {
+                   ImGui::BeginDisabled(!app.engine.running());
+                   if (Button("Play beep", ImVec2(S(130), S(30)))) app.engine.playTestTone();
+                   ImGui::EndDisabled();
+               });
     SettingRow("Virtual microphone name", "Name for the built-in virtual device (planned). A cable like VB-Cable keeps its own name.",
                cw, [&](float) {
                    ImGui::SetNextItemWidth(cw);
@@ -560,6 +625,18 @@ void DrawSettingsPage(App& app) {
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (fh - S(20)) * 0.5f);
         if (Toggle("##monitor", &s.monitorEnabled)) devicesChanged = true;
     });
+    {
+        char title[48];
+        std::snprintf(title, sizeof(title), "Audio buffer: %d ms", s.bufferMs);
+        SettingRow(title, "Raise it if the sound crackles or stutters; lower it for less delay.", cw, [&](float) {
+            ImGui::PushID("##buffer");
+            if (Slider("##bufms", &s.bufferMs, 10, 100, false, 20)) {
+                app.dirty = true;
+                restartPending = true;
+            }
+            ImGui::PopID();
+        });
+    }
     ImGui::BeginDisabled(!s.monitorEnabled);
     SettingRow("Headphones", nullptr, cw, [&](float) {
         DeviceCombo("##monitor_dev", s.monitor, app.engine.outputDevices(), cw, devicesChanged);
@@ -588,12 +665,14 @@ void DrawSettingsPage(App& app) {
     if (toggleRow("Start minimized", "Open hidden in the tray instead of showing the window.", "##minimized",
                   &s.startMinimized))
         app.dirty = true;
-    if (toggleRow("Start processing automatically", "Begin processing as soon as the app launches.", "##autoengine",
-                  &s.autoStartEngine))
-        app.dirty = true;
-
     if (devicesChanged) {
         app.dirty = true;
+        app.restartIfRunning();
+    }
+    // The buffer size only matters on start; apply it once the slider is released.
+    if (restartPending) pendingBufferRestart = true;
+    if (pendingBufferRestart && !ImGui::IsMouseDown(0)) {
+        pendingBufferRestart = false;
         app.restartIfRunning();
     }
 }
@@ -604,20 +683,31 @@ void DrawFooter(App& app, ImVec2 origin, float width, float height) {
     dl->AddLine(origin, ImVec2(origin.x + width, origin.y), U32(Hex(kBorder)));
 
     const bool running = app.engine.running();
-    const float top = origin.y + (height - S(34)) * 0.5f;
+    const float pitch = S(16);
+    const float top = origin.y + (height - (2 * pitch + S(14))) * 0.5f;
     LevelBar("IN", ImVec2(origin.x + pad, top), S(120), app.engine.inputLevel());
-    LevelBar("OUT", ImVec2(origin.x + pad, top + S(18)), S(120), app.engine.outputLevel());
+    LevelBar("OUT", ImVec2(origin.x + pad, top + pitch), S(120), app.engine.outputLevel());
+    LevelBar("SENT", ImVec2(origin.x + pad, top + 2 * pitch), S(120), app.engine.deviceLevel());
 
-    const ImVec2 btn(S(110), S(38));
+    const ImVec2 btn(S(132), S(38));
     const float bx = origin.x + width - pad - btn.x;
     ImGui::SetCursorScreenPos(ImVec2(bx, origin.y + (height - btn.y) * 0.5f));
-    if (Button(running ? "Stop" : "Start", btn, running ? Look::Danger : Look::Primary)) app.toggle();
+    ImGui::BeginDisabled(app.paused);
+    if (Button(app.soundCheck ? "Stop check" : "Sound check", btn, app.soundCheck ? Look::Danger : Look::Primary))
+        app.setSoundCheck(!app.soundCheck);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Hear yourself with all effects applied for 30 seconds.\nUse headphones to avoid an echo.");
 
-    char status[48];
-    if (running)
-        std::snprintf(status, sizeof(status), "Live  \xC2\xB7  ~%d ms", app.engine.latencyMs());
+    char status[72];
+    if (running && app.engine.glitches() > 0)
+        std::snprintf(status, sizeof(status), "Live  \xC2\xB7  ~%d ms  \xC2\xB7  %u glitches", app.engine.latencyMs(),
+                      app.engine.glitches());
+    else if (running)
+        std::snprintf(status, sizeof(status), "%s  \xC2\xB7  ~%d ms", app.soundCheck ? "Listening" : "Live",
+                      app.engine.latencyMs());
     else
-        std::snprintf(status, sizeof(status), "%s", app.error.empty() ? "Stopped" : "Not started");
+        std::snprintf(status, sizeof(status), "%s", app.paused ? "Paused" : (app.error.empty() ? "Starting..." : "Not started"));
     const ImVec2 ts = ImGui::CalcTextSize(status);
     const ImVec4 col = running ? Hex(kAccent) : Hex(app.error.empty() ? kMuted : kDanger);
     dl->AddText(ImVec2(bx - S(14) - ts.x, origin.y + (height - ts.y) * 0.5f), U32(col), status);

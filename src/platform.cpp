@@ -126,7 +126,7 @@ void TrayRemove(HWND hwnd) {
 TrayCommand TrayShowMenu(HWND hwnd, bool running) {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, kTrayOpen, L"Open WinEffects");
-    AppendMenuW(menu, MF_STRING, kTrayToggle, running ? L"Stop processing" : L"Start processing");
+    AppendMenuW(menu, MF_STRING, kTrayToggle, running ? L"Pause processing" : L"Resume processing");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kTrayQuit, L"Quit");
 

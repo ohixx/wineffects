@@ -21,6 +21,7 @@ struct Param {
     std::string format;  // printf format taking one int, e.g. "%d%%" or "%+d st"
     int min, max, def;
     bool centered;  // fill the slider from the middle (for +/- ranges)
+    std::vector<std::string> choices;  // if set, the value is an index and these are the names
     std::atomic<int> value;
 };
 

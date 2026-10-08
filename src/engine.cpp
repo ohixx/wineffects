@@ -18,12 +18,13 @@ public:
 
     size_t available() const { return w_.load(std::memory_order_acquire) - r_.load(std::memory_order_acquire); }
 
-    void write(const float* data, size_t n) {
+    bool write(const float* data, size_t n) {
         const size_t w = w_.load(std::memory_order_relaxed);
         const size_t r = r_.load(std::memory_order_acquire);
-        if (buf_.size() - (w - r) < n) return;  // consumer stalled: drop this block
+        if (buf_.size() - (w - r) < n) return false;  // consumer stalled: drop this block
         for (size_t i = 0; i < n; ++i) buf_[(w + i) & mask_] = data[i];
         w_.store(w + n, std::memory_order_release);
+        return true;
     }
 
     size_t read(float* data, size_t n) {
@@ -48,16 +49,16 @@ private:
     std::atomic<size_t> r_{0}, w_{0};
 };
 
-// Playback buffering, in samples at 48 kHz.
-constexpr size_t kPrime = kBlockSize * 2;       // start playing after 20 ms is buffered
-constexpr size_t kMaxFill = kBlockSize * 8;     // above 80 ms we are drifting: trim
-constexpr size_t kTargetFill = kBlockSize * 3;  // ...back down to 30 ms
-
 struct Sink {
     ma_device device;
     Ring ring;
     bool inited = false;
     bool primed = false;
+    // Buffering in samples: start playing once `prime` is queued; if the queue grows past
+    // `maxFill` the two devices are drifting apart, so trim it back to `target`.
+    size_t prime = kBlockSize * 2, maxFill = kBlockSize * 8, target = kBlockSize * 3;
+    std::atomic<unsigned>* glitches = nullptr;
+    std::atomic<float>* level = nullptr;  // peak of the samples delivered to the device
 };
 
 void PlaybackCallback(ma_device* dev, void* output, const void*, ma_uint32 frames) {
@@ -66,12 +67,13 @@ void PlaybackCallback(ma_device* dev, void* output, const void*, ma_uint32 frame
     Ring& ring = sink->ring;
 
     size_t avail = ring.available();
-    if (avail > kMaxFill) {
-        ring.skip(avail - kTargetFill);
-        avail = kTargetFill;
+    if (avail > sink->maxFill) {
+        ring.skip(avail - sink->target);
+        avail = sink->target;
+        sink->glitches->fetch_add(1, std::memory_order_relaxed);
     }
     if (!sink->primed) {
-        if (avail < kPrime) {
+        if (avail < sink->prime) {
             std::memset(out, 0, sizeof(float) * 2 * frames);
             return;
         }
@@ -79,18 +81,24 @@ void PlaybackCallback(ma_device* dev, void* output, const void*, ma_uint32 frame
     }
 
     float chunk[512];
+    float peak = 0;
     ma_uint32 done = 0;
     while (done < frames) {
         const size_t want = std::min<size_t>(512, frames - done);
         const size_t got = ring.read(chunk, want);
-        for (size_t i = 0; i < got; ++i) out[2 * (done + i)] = out[2 * (done + i) + 1] = chunk[i];
+        for (size_t i = 0; i < got; ++i) {
+            out[2 * (done + i)] = out[2 * (done + i) + 1] = chunk[i];
+            peak = std::max(peak, std::fabs(chunk[i]));
+        }
         done += static_cast<ma_uint32>(got);
         if (got < want) break;
     }
     if (done < frames) {  // underrun: output silence and rebuffer
         std::memset(out + 2 * done, 0, sizeof(float) * 2 * (frames - done));
         sink->primed = false;
+        sink->glitches->fetch_add(1, std::memory_order_relaxed);
     }
+    if (sink->level) sink->level->store(std::max(peak, sink->level->load(std::memory_order_relaxed) * 0.85f));
 }
 
 float Peak(const float* s, int n) {
@@ -112,12 +120,17 @@ struct Engine::Impl {
     Sink output, monitor;
     bool monitorOn = false;
     std::atomic<bool> running{false};
+    int bufferMs = 20;
 
     std::shared_ptr<const Chain> chain = std::make_shared<const Chain>();
 
     float acc[kBlockSize];
     int fill = 0;
     std::atomic<float> inLevel{0}, outLevel{0};
+    std::atomic<unsigned> glitches{0};
+    std::atomic<float> deviceLevel{0};
+    std::atomic<int> toneBlocks{0};
+    double tonePhase = 0;
 
     void onCapture(const float* in, ma_uint32 n) {
         while (n > 0) {
@@ -140,10 +153,19 @@ struct Engine::Impl {
         for (const auto& e : *c)
             if (e->enabled.load(std::memory_order_relaxed)) e->process(acc, kBlockSize);
 
+        int tone = toneBlocks.load(std::memory_order_relaxed);
+        if (tone > 0) {
+            for (float& v : acc) {
+                v = 0.25f * static_cast<float>(std::sin(tonePhase));
+                tonePhase += 2.0 * 3.14159265358979 * 440.0 / kSampleRate;
+            }
+            toneBlocks.store(tone - 1, std::memory_order_relaxed);
+        }
+
         for (float& v : acc) v = std::clamp(v, -1.0f, 1.0f);
         outLevel.store(std::max(Peak(acc, kBlockSize), outLevel.load() * 0.85f));
 
-        output.ring.write(acc, kBlockSize);
+        if (!output.ring.write(acc, kBlockSize)) glitches.fetch_add(1, std::memory_order_relaxed);
         if (monitorOn) monitor.ring.write(acc, kBlockSize);
     }
 
@@ -160,7 +182,12 @@ struct Engine::Impl {
     }
 
     // Initialise a stereo playback device that drains `sink.ring`.
-    ma_result openSink(Sink& sink, const ma_device_id* id) {
+    ma_result openSink(Sink& sink, const ma_device_id* id, int bufferMs) {
+        const size_t blocks = static_cast<size_t>(std::clamp(bufferMs, 10, 200)) / 10;
+        sink.prime = kBlockSize * blocks;
+        sink.target = kBlockSize * (blocks + 1);
+        sink.maxFill = kBlockSize * (blocks * 3 + 2);
+        sink.glitches = &glitches;
         ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
         cfg.playback.pDeviceID = id;
         cfg.playback.format = ma_format_f32;
@@ -246,13 +273,19 @@ std::string Engine::start(const EngineConfig& cfg) {
     m.fill = 0;
     m.inLevel = m.outLevel = 0;
 
-    ma_result r = m.openSink(m.output, outId);
+    m.glitches = 0;
+    m.deviceLevel = 0;
+    m.toneBlocks = 0;
+    m.output.level = &m.deviceLevel;
+    m.monitor.level = nullptr;
+    m.bufferMs = cfg.bufferMs;
+    ma_result r = m.openSink(m.output, outId, cfg.bufferMs);
     if (r != MA_SUCCESS) {
         m.closeDevices();
         return std::string("Cannot open output device: ") + ma_result_description(r);
     }
     if (cfg.monitorEnabled) {
-        r = m.openSink(m.monitor, monId);
+        r = m.openSink(m.monitor, monId, cfg.bufferMs);
         if (r != MA_SUCCESS) {
             m.closeDevices();
             return std::string("Cannot open headphones: ") + ma_result_description(r);
@@ -341,5 +374,13 @@ int Engine::latencyMs() const {
     for (const auto& e : chain())
         if (e->enabled.load()) samples += e->latencySamples();
     // Device periods (capture + playback) and the playback prime buffer.
-    return samples * 1000 / kSampleRate + 45;
+    return samples * 1000 / kSampleRate + 25 + impl_->bufferMs;
 }
+
+float Engine::deviceLevel() const { return impl_->deviceLevel.load(); }
+
+void Engine::playTestTone() {
+    if (impl_->running) impl_->toneBlocks.store(200);  // 2 s
+}
+
+unsigned Engine::glitches() const { return impl_->glitches.load(); }

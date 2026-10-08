@@ -84,18 +84,35 @@ void App::load() {
         else if (key == "mic_name") settings.micName = val;
         else if (key == "close_to_tray") settings.closeToTray = Bool(val);
         else if (key == "start_minimized") settings.startMinimized = Bool(val);
-        else if (key == "auto_start_engine") settings.autoStartEngine = Bool(val);
+        else if (key == "buffer_ms") {
+            try {
+                settings.bufferMs = std::clamp(std::stoi(val), 10, 100);
+            } catch (...) {
+            }
+        }
     }
 
     settings.autostart = IsAutostartEnabled();
 
-    if (firstRun) {
-        // Pre-select a virtual cable if one is installed.
-        for (const std::string& name : engine.outputDevices())
-            if (name.find("CABLE Input") != std::string::npos) settings.output = name;
+    selectVirtualCable();
+    if (firstRun)
         engine.addEffect("noise");
-    } else if (hadChain) {
+    else if (hadChain)
         engine.setChain(std::move(chain));
+}
+
+std::string App::virtualCableName() const {
+    for (const std::string& name : engine.outputDevices())
+        if (name.find("CABLE Input") != std::string::npos) return name;
+    return {};
+}
+
+// If no output has been chosen yet, prefer an installed virtual cable over the speakers.
+void App::selectVirtualCable() {
+    const std::string cable = virtualCableName();
+    if (settings.output.empty() && !cable.empty()) {
+        settings.output = cable;
+        dirty = true;
     }
 }
 
@@ -110,7 +127,7 @@ void App::save() {
     out << "mic_name=" << settings.micName << "\n";
     out << "close_to_tray=" << settings.closeToTray << "\n";
     out << "start_minimized=" << settings.startMinimized << "\n";
-    out << "auto_start_engine=" << settings.autoStartEngine << "\n";
+    out << "buffer_ms=" << settings.bufferMs << "\n";
 
     for (const auto& e : engine.chain()) {
         out << "\n[effect]\n";
@@ -126,17 +143,41 @@ void App::start() {
     cfg.input = settings.input;
     cfg.output = settings.output;
     cfg.monitor = settings.monitor;
-    cfg.monitorEnabled = settings.monitorEnabled;
+    cfg.monitorEnabled = settings.monitorEnabled || soundCheck;
+    cfg.bufferMs = settings.bufferMs;
     error = engine.start(cfg);
 }
 
 void App::stop() { engine.stop(); }
 
 void App::toggle() {
-    if (engine.running()) {
+    paused = !paused;
+    if (paused) {
+        soundCheck = false;
         stop();
         error.clear();
     } else {
+        start();
+    }
+}
+
+void App::setSoundCheck(bool on) {
+    if (on && paused) return;
+    soundCheck = on;
+    soundCheckEndMs = GetTickCount64() + 30000;  // never leave it on by accident
+    restartIfRunning();
+}
+
+void App::tick() {
+    const ULONGLONG now = GetTickCount64();
+    if (soundCheck && now >= soundCheckEndMs) setSoundCheck(false);
+
+    // Keep going: retry every few seconds if the devices were not available (or went away).
+    static ULONGLONG lastTry = 0;
+    if (!paused && !engine.running() && now - lastTry > 3000) {
+        lastTry = now;
+        engine.refreshDevices();
+        selectVirtualCable();
         start();
     }
 }

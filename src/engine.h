@@ -11,6 +11,7 @@ struct EngineConfig {
     std::string output;   // playback device name (the virtual cable), empty = system default
     std::string monitor;  // headphones device name, empty = system default
     bool monitorEnabled = false;
+    int bufferMs = 20;  // playback buffer: larger = fewer dropouts, more delay
 };
 
 // Microphone -> effect chain -> output device (and optionally a monitor device).
@@ -43,6 +44,16 @@ public:
 
     // Rough end-to-end delay estimate in milliseconds.
     int latencyMs() const;
+
+    // Peak level of what is actually handed to the output device (0..1). If this moves but the other
+    // app hears nothing, the problem is on the Windows / app side, not in WinEffects.
+    float deviceLevel() const;
+
+    // Replaces the microphone with a 440 Hz beep for two seconds, to test the virtual microphone.
+    void playTestTone();
+
+    // Number of audible glitches (buffer underruns / overruns) since start.
+    unsigned glitches() const;
 
 private:
     struct Impl;
