@@ -24,17 +24,25 @@ WinEffects is a small native Windows app in the spirit of EasyEffects. It takes 
 Effects available now:
 
 - **Noise suppression**: [RNNoise](https://gitlab.xiph.org/xiph/rnnoise) with an adjustable strength.
-- **Pitch**: -12 to +12 semitones, speech speed unchanged ([Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch)).
+- **Pitch**: -12 to +12 semitones, speech speed unchanged. Two methods: *Natural* (time-domain, like SoundTouch in EasyEffects) and *Smooth* ([Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch), keeps your timbre).
+- **Female**: turns any voice, deep or high, into a female one. Pick how old she sounds (10 to 70). It tracks your average pitch and shifts it by one slowly changing ratio, so your intonation and manner of speech stay; the formants are moved along with it.
+- **Trash**: loud, noisy, muffled sound of a blown-out cheap microphone, for beefs and toxic battles. Distortion, muffle, bit crush, noise and crackle, loudness.
 
 The chain is editable: add, remove, reorder and toggle effects. New effects only need an `Effect` class with a few parameters; the UI is generated from it (see `src/effect.h`).
 
+## Install
+
+Download [`dist/WinEffects-Setup.exe`](dist/WinEffects-Setup.exe) and run it. It installs per user (no administrator rights), adds Start menu and optional desktop shortcuts and can enable start with Windows. A checkbox installs the virtual microphone: it downloads [VB-Cable](https://vb-audio.com/Cable/) from its vendor and runs its setup (Windows asks for administrator rights for the driver). The app also tells you if no virtual cable is present.
+
+The installer is built from `installer/wineffects.nsi` with NSIS (`makensis`, works on Linux too).
+
 ## Usage
 
-1. Install a virtual cable such as [VB-Cable](https://vb-audio.com/Cable/).
-2. Open Settings, choose your microphone and set the output to `CABLE Input`.
-3. Press Start, then pick `CABLE Output` as the microphone in Discord, OBS, etc.
+1. Start WinEffects. If VB-Cable is installed, `CABLE Input` is selected as the output automatically.
+2. Open Settings and choose your microphone.
+3. In Discord, OBS, etc. pick `CABLE Output` as the microphone. That is all: WinEffects processes in the background from the moment it starts (pause it from the tray menu). Use **Sound check** to hear yourself for 30 seconds.
 
-Settings also cover monitoring through headphones, start with Windows, close to tray, start minimized and auto-start of processing. Configuration is stored in `%APPDATA%\WinEffects\settings.ini`.
+Settings also cover permanent monitoring through headphones, start with Windows, close to tray and start minimized. Configuration is stored in `%APPDATA%\WinEffects\settings.ini`.
 
 ## Technical overview
 
@@ -43,7 +51,7 @@ Settings also cover monitoring through headphones, start with Windows, close to 
 - C++17 and CMake. No Electron, Qt or .NET; one static executable.
 - Audio I/O: [miniaudio](https://miniaud.io). Interface: [Dear ImGui](https://github.com/ocornut/imgui) on Direct3D 11.
 - Lock-free ring buffers between devices; the audio thread never allocates.
-- Estimated latency with pitch enabled: about 120 ms, without it about 45 ms.
+- Estimated latency: about 45 ms with noise suppression only; pitch and Female add 50 to 75 ms.
 
 ## Status
 
